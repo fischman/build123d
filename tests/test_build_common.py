@@ -27,6 +27,8 @@ license:
 """
 import unittest
 from math import pi
+import sys
+from time import time
 from build123d import *
 from build123d import Builder, WorkplaneList, LocationList
 
@@ -122,6 +124,27 @@ class TestBuilder(unittest.TestCase):
             extrude(amount=5)
             with self.assertWarns(UserWarning):
                 p.solid()
+
+
+class TestBuidlerPerformance(unittest.TestCase):
+    def test_box(self):
+        def workload():
+            # Replacing PRIVATE with ADD (the default) on the next line makes this test case fail.
+            return [Box(1, 1, 1, mode=Mode.PRIVATE) for _ in range(10)]
+        with BuildPart() as prewarm:
+            workload()
+        start = time()
+        b1 = workload()
+        algebra = time()
+        with BuildPart() as b:
+            workload()
+        b2 = b.part
+        builder = time()
+        builder -= algebra
+        algebra -= start
+        b_over_a = builder/algebra
+        print(f'b_over_a: {b_over_a}', file=sys.stderr)
+        self.assertLess(b_over_a, 2, 'Ratio of Builder API time to Algebra API time too high')
 
 
 class TestBuilderExit(unittest.TestCase):
