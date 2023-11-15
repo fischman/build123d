@@ -7303,7 +7303,7 @@ class Joint(ABC):
         self.connected_to = other
 
     @abstractmethod
-    def connect_to(self, other: Joint, **kwargs):
+    def connect_to(self, other: Joint, *args, **kwargs):
         """All derived classes must provide a connect_to method"""
         raise NotImplementedError
 
