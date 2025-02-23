@@ -25,31 +25,82 @@ license:
     limitations under the License.
 
 """
+
 # pylint has trouble with the OCP imports
 # pylint: disable=no-name-in-module, import-error
 
 import os
+from os import PathLike, fsdecode
+import re
+import unicodedata
 from math import degrees
 from pathlib import Path
-from typing import TextIO, Union
+from typing import Literal, Optional, TextIO, Union
+import warnings
 
-import OCP.IFSelect
-from build123d.geometry import Color
-from build123d.topology import Compound, Face, Shape, ShapeList, Wire
 from OCP.BRep import BRep_Builder
+from OCP.BRepGProp import BRepGProp
 from OCP.BRepTools import BRepTools
+from OCP.GProp import GProp_GProps
+from OCP.Quantity import Quantity_ColorRGBA
 from OCP.RWStl import RWStl
-from OCP.STEPControl import STEPControl_Reader
-from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
+from OCP.STEPCAFControl import STEPCAFControl_Reader
+from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
+from OCP.TDataStd import TDataStd_Name
+from OCP.TDF import TDF_Label, TDF_LabelSequence
+from OCP.TDocStd import TDocStd_Document
+from OCP.TopAbs import TopAbs_FACE
+from OCP.TopExp import TopExp_Explorer
+from OCP.TopoDS import (
+    TopoDS_Compound,
+    TopoDS_Edge,
+    TopoDS_Face,
+    TopoDS_Shape,
+    TopoDS_Shell,
+    TopoDS_Solid,
+    TopoDS_Vertex,
+    TopoDS_Wire,
+)
+from OCP.XCAFDoc import (
+    XCAFDoc_ColorCurv,
+    XCAFDoc_ColorGen,
+    XCAFDoc_ColorSurf,
+    XCAFDoc_DocumentTool,
+)
 from ocpsvg import ColorAndLabel, import_svg_document
 from svgpathtools import svg2paths
 
+from build123d.build_enums import Align
+from build123d.geometry import Color, Location, Vector, to_align_offset
+from build123d.topology import (
+    Compound,
+    Edge,
+    Face,
+    Shape,
+    ShapeList,
+    Shell,
+    Solid,
+    Vertex,
+    Wire,
+    downcast,
+)
 
-def import_brep(file_name: str) -> Shape:
+topods_lut = {
+    TopoDS_Compound: Compound,
+    TopoDS_Edge: Edge,
+    TopoDS_Face: Face,
+    TopoDS_Shell: Shell,
+    TopoDS_Solid: Solid,
+    TopoDS_Vertex: Vertex,
+    TopoDS_Wire: Wire,
+}
+
+
+def import_brep(file_name: PathLike | str | bytes) -> Shape:
     """Import shape from a BREP file
 
     Args:
-        file_name (str): brep file
+        file_name (Union[PathLike, str, bytes]): brep file
 
     Raises:
         ValueError: file not found
@@ -60,21 +111,22 @@ def import_brep(file_name: str) -> Shape:
     shape = TopoDS_Shape()
     builder = BRep_Builder()
 
-    BRepTools.Read_s(shape, file_name, builder)
+    file_name_str = fsdecode(file_name)
+    BRepTools.Read_s(shape, file_name_str, builder)
 
     if shape.IsNull():
-        raise ValueError(f"Could not import {file_name}")
+        raise ValueError(f"Could not import {file_name_str}")
 
-    return Shape.cast(shape)
+    return Compound.cast(shape)
 
 
-def import_step(file_name: str) -> Compound:
+def import_step(filename: PathLike | str | bytes) -> Compound:
     """import_step
 
     Extract shapes from a STEP file and return them as a Compound object.
 
     Args:
-        file_name (str): file path of STEP file to import
+        file_name (Union[PathLike, str, bytes]): file path of STEP file to import
 
     Raises:
         ValueError: can't open file
@@ -82,27 +134,104 @@ def import_step(file_name: str) -> Compound:
     Returns:
         Compound: contents of STEP file
     """
-    # Now read and return the shape
-    reader = STEPControl_Reader()
-    read_status = reader.ReadFile(file_name)
-    if read_status != OCP.IFSelect.IFSelect_RetDone:
-        raise ValueError(f"STEP File {file_name} could not be loaded")
-    for i in range(reader.NbRootsForTransfer()):
-        reader.TransferRoot(i + 1)
 
-    occ_shapes = []
-    for i in range(reader.NbShapes()):
-        occ_shapes.append(reader.Shape(i + 1))
+    def get_name(label: TDF_Label) -> str:
+        """Extract name and format"""
+        name = ""
+        std_name = TDataStd_Name()
+        if label.FindAttribute(TDataStd_Name.GetID_s(), std_name):
+            name = TCollection_AsciiString(std_name.Get()).ToCString()
+        # Remove characters that cause ocp_vscode to fail
+        clean_name = "".join(ch for ch in name if unicodedata.category(ch)[0] != "C")
+        return clean_name.translate(str.maketrans(" .()", "____"))
 
-    # Make sure that we extract all the solids
-    solids = []
-    for shape in occ_shapes:
-        solids.append(Shape.cast(shape))
+    def get_color(shape: TopoDS_Shape) -> Quantity_ColorRGBA:
+        """Get the color - take that of the largest Face if multiple"""
 
-    return Compound.make_compound(solids)
+        def get_col(obj: TopoDS_Shape) -> Quantity_ColorRGBA:
+            col = Quantity_ColorRGBA()
+            if (
+                color_tool.GetColor(obj, XCAFDoc_ColorCurv, col)
+                or color_tool.GetColor(obj, XCAFDoc_ColorGen, col)
+                or color_tool.GetColor(obj, XCAFDoc_ColorSurf, col)
+            ):
+                return col
+
+        shape_color = get_col(shape)
+
+        colors = {}
+        face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while face_explorer.More():
+            current_face = face_explorer.Current()
+            properties = GProp_GProps()
+            BRepGProp.SurfaceProperties_s(current_face, properties)
+            area = properties.Mass()
+            color = get_col(current_face)
+            if color is not None:
+                colors[area] = color
+            face_explorer.Next()
+
+        # If there are multiple colors, return the one from the largest face
+        if colors:
+            shape_color = sorted(colors.items())[-1][1]
+
+        return shape_color
+
+    def build_assembly(parent_tdf_label: TDF_Label | None = None) -> list[Shape]:
+        """Recursively extract object into an assembly"""
+        sub_tdf_labels = TDF_LabelSequence()
+        if parent_tdf_label is None:
+            shape_tool.GetFreeShapes(sub_tdf_labels)
+        else:
+            shape_tool.GetComponents_s(parent_tdf_label, sub_tdf_labels)
+
+        sub_shapes: list[Shape] = []
+        for i in range(sub_tdf_labels.Length()):
+            sub_tdf_label = sub_tdf_labels.Value(i + 1)
+            if shape_tool.IsReference_s(sub_tdf_label):
+                ref_tdf_label = TDF_Label()
+                shape_tool.GetReferredShape_s(sub_tdf_label, ref_tdf_label)
+            else:
+                ref_tdf_label = sub_tdf_label
+
+            sub_topo_shape = downcast(shape_tool.GetShape_s(ref_tdf_label))
+            if shape_tool.IsAssembly_s(ref_tdf_label):
+                sub_shape = Compound()
+                sub_shape.children = build_assembly(ref_tdf_label)
+            else:
+                sub_shape = topods_lut[type(sub_topo_shape)](sub_topo_shape)
+
+            sub_shape.color = Color(get_color(sub_topo_shape))
+            sub_shape.label = get_name(ref_tdf_label)
+            sub_shape.move(Location(shape_tool.GetLocation_s(sub_tdf_label)))
+
+            sub_shapes.append(sub_shape)
+        return sub_shapes
+
+    if not os.path.exists(filename):
+        raise FileNotFoundError(filename)
+
+    fmt = TCollection_ExtendedString("XCAF")
+    doc = TDocStd_Document(fmt)
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    color_tool = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    reader.SetColorMode(True)
+    reader.SetLayerMode(True)
+    reader.ReadFile(fsdecode(filename))
+    reader.Transfer(doc)
+
+    root = Compound()
+    root.children = build_assembly()
+    # Remove empty Compound wrapper if single free object
+    if len(root.children) == 1:
+        root = root.children[0]
+
+    return root
 
 
-def import_stl(file_name: str) -> Face:
+def import_stl(file_name: PathLike | str | bytes) -> Face:
     """import_stl
 
     Extract shape from an STL file and return it as a Face reference object.
@@ -112,7 +241,7 @@ def import_stl(file_name: str) -> Face:
     of the STL file.
 
     Args:
-        file_name (str): file path of STL file to import
+        file_name (Union[PathLike, str, bytes]): file path of STL file to import
 
     Raises:
         ValueError: Could not import file
@@ -121,20 +250,22 @@ def import_stl(file_name: str) -> Face:
         Face: STL model
     """
     # Read and return the shape
-    reader = RWStl.ReadFile_s(file_name)
+    reader = RWStl.ReadFile_s(fsdecode(file_name))
     face = TopoDS_Face()
     BRep_Builder().MakeFace(face, reader)
     stl_obj = Face.cast(face)
     return stl_obj
 
 
-def import_svg_as_buildline_code(file_name: str) -> tuple[str, str]:
+def import_svg_as_buildline_code(
+    file_name: PathLike | str | bytes,
+) -> tuple[str, str]:
     """translate_to_buildline_code
 
     Translate the contents of the given svg file into executable build123d/BuildLine code.
 
     Args:
-        file_name (str): svg file name
+        file_name (Union[PathLike, str, bytes]): svg file name
 
     Returns:
         tuple[str, str]: code, builder instance name
@@ -155,7 +286,9 @@ def import_svg_as_buildline_code(file_name: str) -> tuple[str, str]:
             "sweep",
         ],
     }
-    paths, _path_attributes = svg2paths(file_name)
+    file_name = fsdecode(file_name)
+    paths_info = svg2paths(file_name)
+    paths, _path_attributes = paths_info[0], paths_info[1]
     builder_name = os.path.basename(file_name).split(".")[0]
     builder_name = builder_name if builder_name.isidentifier() else "builder"
     buildline_code = [
@@ -166,9 +299,7 @@ def import_svg_as_buildline_code(file_name: str) -> tuple[str, str]:
         for curve in path:
             class_name = type(curve).__name__
             if class_name == "Arc":
-                values = [
-                    (curve.__dict__["center"].real, curve.__dict__["center"].imag)
-                ]
+                values = [curve.__dict__["center"]]
                 values.append(curve.__dict__["radius"].real)
                 values.append(curve.__dict__["radius"].imag)
                 start, end = sorted(
@@ -204,23 +335,25 @@ def import_svg_as_buildline_code(file_name: str) -> tuple[str, str]:
 
 
 def import_svg(
-    svg_file: Union[str, Path, TextIO],
+    svg_file: str | Path | TextIO,
     *,
     flip_y: bool = True,
+    align: Align | tuple[Align, Align] | None = Align.MIN,
     ignore_visibility: bool = False,
-    label_by: str = "id",
-    is_inkscape_label: bool = False,
-) -> ShapeList[Union[Wire, Face]]:
+    label_by: Literal["id", "class", "inkscape:label"] | str = "id",
+    is_inkscape_label: bool | None = None,  # TODO remove for `1.0` release
+) -> ShapeList[Wire | Face]:
     """import_svg
 
     Args:
         svg_file (Union[str, Path, TextIO]): svg file
         flip_y (bool, optional): flip objects to compensate for svg orientation. Defaults to True.
+        align (Align | tuple[Align, Align] | None, optional): alignment of the SVG's viewbox,
+            if None, the viewbox's origin will be at `(0,0,0)`. Defaults to Align.MIN.
         ignore_visibility (bool, optional): Defaults to False.
-        label_by (str, optional): xml attribute. Defaults to "id".
-        is_inkscape_label (bool, optional): flag to indicate that the attribute
-            is an Inkscape label like `inkscape:label` - label_by would be set to
-            `label` in this case. Defaults to False.
+        label_by (str, optional): XML attribute to use for imported shapes' `label` property.
+            Defaults to "id".
+            Use `inkscape:label` to read labels set from Inkscape's "Layers and Objects" panel.
 
     Raises:
         ValueError: unexpected shape type
@@ -228,24 +361,38 @@ def import_svg(
     Returns:
         ShapeList[Union[Wire, Face]]: objects contained in svg
     """
+    if is_inkscape_label is not None:  # TODO remove for `1.0` release
+        msg = "`is_inkscape_label` parameter is deprecated"
+        if is_inkscape_label:
+            label_by = "inkscape:" + label_by
+            msg += f", use `label_by={label_by!r}` instead"
+        warnings.warn(msg, stacklevel=2)
+
     shapes = []
-    label_by = (
-        "{http://www.inkscape.org/namespaces/inkscape}" + label_by
-        if is_inkscape_label
-        else label_by
+    label_by = re.sub(
+        r"^inkscape:(.+)", r"{http://www.inkscape.org/namespaces/inkscape}\1", label_by
     )
-    for face_or_wire, color_and_label in import_svg_document(
+    imported = import_svg_document(
         svg_file,
         flip_y=flip_y,
         ignore_visibility=ignore_visibility,
         metadata=ColorAndLabel.Label_by(label_by),
-    ):
+    )
+
+    doc_xy = Vector(imported.viewbox.x, imported.viewbox.y)
+    doc_wh = Vector(imported.viewbox.width, imported.viewbox.height)
+    offset = to_align_offset(doc_xy, doc_xy + doc_wh, align)
+
+    for face_or_wire, color_and_label in imported:
         if isinstance(face_or_wire, TopoDS_Wire):
             shape = Wire(face_or_wire)
         elif isinstance(face_or_wire, TopoDS_Face):
             shape = Face(face_or_wire)
         else:  # should not happen
             raise ValueError(f"unexpected shape type: {type(face_or_wire).__name__}")
+
+        if offset.X != 0 or offset.Y != 0:  # avoid copying if we don't need to
+            shape = shape.translate(offset)
 
         if shape.wrapped:
             shape.color = Color(*color_and_label.color_for(shape.wrapped))

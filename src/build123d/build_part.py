@@ -28,9 +28,8 @@ license:
     limitations under the License.
 
 """
-from __future__ import annotations
 
-from typing import Union
+from __future__ import annotations
 
 from build123d.build_common import Builder, logger
 from build123d.build_enums import Mode
@@ -58,13 +57,30 @@ class BuildPart(Builder):
     _shape = Solid  # Type of shapes being constructed
     _sub_class = Part  # Class of part/_obj
 
-    @property
-    def _obj(self) -> Part:
-        return self.part
+    def __init__(
+        self,
+        *workplanes: Face | Plane | Location,
+        mode: Mode = Mode.ADD,
+    ):
+        self.joints: dict[str, Joint] = {}
+        self._part: Part | None = None  # Use a private attribute
+        self.pending_faces: list[Face] = []
+        self.pending_face_planes: list[Plane] = []
+        self.pending_planes: list[Plane] = []
+        self.pending_edges: list[Edge] = []
+        super().__init__(*workplanes, mode=mode)
 
-    @_obj.setter
-    def _obj(self, value: Part) -> None:
-        self.part = value
+    @property
+    def part(self) -> Part | None:
+        """Get the current part"""
+        return self._part
+
+    @part.setter
+    def part(self, value: Part) -> None:
+        """Set the current part"""
+        self._part = value
+
+    _obj = part  # Alias _obj to part
 
     @property
     def pending_edges_as_wire(self) -> Wire:
@@ -72,24 +88,11 @@ class BuildPart(Builder):
         return Wire.combine(self.pending_edges)[0]
 
     @property
-    def location(self) -> Location:
+    def location(self) -> Location | None:
         """Builder's location"""
         return self.part.location if self.part is not None else Location()
 
-    def __init__(
-        self,
-        *workplanes: Union[Face, Plane, Location],
-        mode: Mode = Mode.ADD,
-    ):
-        self.joints: dict[str, Joint] = {}
-        self.part: Part = None
-        self.pending_faces: list[Face] = []
-        self.pending_face_planes: list[Plane] = []
-        self.pending_planes: list[Plane] = []
-        self.pending_edges: list[Edge] = []
-        super().__init__(*workplanes, mode=mode)
-
-    def _add_to_pending(self, *objects: Union[Edge, Face], face_plane: Plane = None):
+    def _add_to_pending(self, *objects: Edge | Face, face_plane: Plane | None = None):
         """Add objects to BuildPart pending lists
 
         Args:
@@ -103,7 +106,8 @@ class BuildPart(Builder):
                 face_plane,
             )
             self.pending_faces.append(face)
-            self.pending_face_planes.append(face_plane)
+            if face_plane is not None:
+                self.pending_face_planes.append(face_plane)
 
         new_edges = [o for o in objects if isinstance(o, Edge)]
         for edge in new_edges:

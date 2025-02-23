@@ -25,8 +25,12 @@ license:
     limitations under the License.
 
 """
+
 import unittest
-from math import pi, sqrt
+from math import atan2, degrees, pi, sqrt
+
+import pytest
+
 from build123d import *
 
 
@@ -135,7 +139,7 @@ class TestBuildOnPlanes(unittest.TestCase):
 
 class TestUpSideDown(unittest.TestCase):
     def test_flip_face(self):
-        f1 = Face.make_from_wires(
+        f1 = Face(
             Wire.make_polygon([(1, 0), (1.5, 0.5), (1, 2), (3, 1), (2, 0), (1, 0)])
         )
         f1 = (
@@ -145,9 +149,7 @@ class TestUpSideDown(unittest.TestCase):
         ).faces()[0]
         self.assertTrue(f1.normal_at().Z < 0)  # Up-side-down
 
-        f2 = Face.make_from_wires(
-            Wire.make_polygon([(1, 0), (1.5, -1), (2, -1), (2, 0), (1, 0)])
-        )
+        f2 = Face(Wire.make_polygon([(1, 0), (1.5, -1), (2, -1), (2, 0), (1, 0)]))
         self.assertTrue(f2.normal_at().Z > 0)  # Right-side-up
         with BuildSketch() as flip_test:
             add(f1)
@@ -264,6 +266,7 @@ class TestBuildSketchObjects(unittest.TestCase):
         self.assertTupleAlmostEquals(
             test.sketch.faces()[0].normal_at().to_tuple(), (0, 0, 1), 5
         )
+        self.assertAlmostEqual(r.apothem, 2 * sqrt(3) / 2)
 
     def test_regular_polygon_minor_radius(self):
         with BuildSketch() as test:
@@ -382,6 +385,42 @@ class TestBuildSketchObjects(unittest.TestCase):
             with BuildSketch() as test:
                 Trapezoid(6, 2, 30)
 
+        with self.assertRaises(ValueError):
+            with BuildSketch() as test:
+                Trapezoid(6, 2, 150)
+
+        with BuildSketch() as test:
+            t = Trapezoid(12, 8, 135, 90)
+        self.assertEqual(t.width, 12)
+        self.assertEqual(t.trapezoid_height, 8)
+        self.assertEqual(t.left_side_angle, 135)
+        self.assertEqual(t.right_side_angle, 90)
+        self.assertAlmostEqual(test.sketch.area, 8 * (12 + 4) / 2, 5)
+
+    def test_triangle(self):
+        tri = Triangle(a=3, b=4, c=5, align=Align.MIN)
+        self.assertAlmostEqual(tri.area, (3 * 4) / 2, 5)
+        self.assertAlmostEqual(tri.A, degrees(atan2(3, 4)), 5)
+        self.assertAlmostEqual(tri.B, degrees(atan2(4, 3)), 5)
+        self.assertAlmostEqual(tri.C, 90, 5)
+        self.assertAlmostEqual(tri.a, 3, 5)
+        self.assertAlmostEqual(tri.b, 4, 5)
+        self.assertAlmostEqual(tri.c, 5, 5)
+        self.assertAlmostEqual(tri.edge_a.length, 3, 5)
+        self.assertAlmostEqual(tri.edge_b.length, 4, 5)
+        self.assertAlmostEqual(tri.edge_c.length, 5, 5)
+        self.assertTupleAlmostEquals(tri.vertex_A, (3, 4, 0), 5)
+        self.assertTupleAlmostEquals(tri.vertex_B, (0, 0, 0), 5)
+        self.assertTupleAlmostEquals(tri.vertex_C, (3, 0, 0), 5)
+
+        tri = Triangle(c=5, C=90, a=3)
+        self.assertAlmostEqual(tri.area, (3 * 4) / 2, 5)
+
+        with self.assertRaises(ValueError):
+            Triangle(A=90, B=45, C=45)
+        with self.assertRaises(AssertionError):
+            Triangle(a=10, b=4, c=4)
+
     def test_offset(self):
         """Test normal and error cases"""
         with BuildSketch() as test:
@@ -438,6 +477,49 @@ class TestBuildSketchObjects(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             trace()
+
+        line = Polyline((0, 0), (10, 10), (20, 10))
+        test = trace(line, 4)
+        self.assertEqual(len(test.faces()), 1)
+
+    def test_full_round(self):
+        with BuildSketch() as test:
+            trap = Trapezoid(0.5, 1, 90 - 8)
+            full_round(test.edges().sort_by(Axis.Y)[-1])
+        self.assertLess(test.face().area, trap.face().area)
+
+        with self.assertRaises(ValueError):
+            full_round(test.edges().sort_by(Axis.Y))
+
+        with self.assertRaises(ValueError):
+            full_round(trap.edges().sort_by(Axis.X)[-1])
+
+        l1 = Edge.make_spline([(-1, 0), (1, 0)], tangents=((0, -8), (0, 8)), scale=True)
+        l2 = Edge.make_line(l1 @ 0, l1 @ 1)
+        face = Face(Wire([l1, l2]))
+        with self.assertRaises(ValueError):
+            full_round(face.edges()[0])
+
+        positive, c1, r1 = full_round(trap.edges().sort_by(SortBy.LENGTH)[0])
+        negative, c2, r2 = full_round(
+            trap.edges().sort_by(SortBy.LENGTH)[0], invert=True
+        )
+        self.assertLess(negative.area, positive.area)
+        self.assertAlmostEqual(r1, r2, 2)
+        self.assertTupleAlmostEquals(tuple(c1), tuple(c2), 2)
+
+
+@pytest.mark.parametrize(
+    "slot,args",
+    [
+        (SlotOverall, (5, 10)),
+        (SlotCenterToCenter, (-1, 10)),
+        (SlotCenterPoint, ((0, 0, 0), (2, 0, 0), 10)),
+    ],
+)
+def test_invalid_slots(slot, args):
+    with pytest.raises(ValueError):
+        slot(*args)
 
 
 if __name__ == "__main__":

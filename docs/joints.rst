@@ -196,7 +196,7 @@ is found within a rod end as shown here:
     :emphasize-lines: 40-44,51,53
 
 Note how limits are defined during the instantiation of the ball joint when ensures that the pin or bolt 
-within the rod end does not interfer with the rod end itself. The ``connect_to`` sets the three angles
+within the rod end does not interfere with the rod end itself. The ``connect_to`` sets the three angles
 (only two are significant in this example).
 
 .. autoclass:: BallJoint

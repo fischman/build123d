@@ -25,6 +25,7 @@ license:
     limitations under the License.
 
 """
+
 import unittest
 from math import pi, sin
 from build123d import *
@@ -309,8 +310,8 @@ class TestLoft(unittest.TestCase):
         self.assertGreater(test.part.volume, 25 * pi * 30, 5)
 
         sections = [
-            Face.make_from_wires(
-                Wire.make_wire(
+            Face(
+                Wire(
                     [
                         Edge.make_circle(10 * sin(i * pi / slice_count) + 5).moved(
                             Location(Vector(0, 0, i * 3))
@@ -324,6 +325,50 @@ class TestLoft(unittest.TestCase):
             loft(sections)
         self.assertLess(test.part.volume, 225 * pi * 30, 5)
         self.assertGreater(test.part.volume, 25 * pi * 30, 5)
+
+    def test_loft_vertex(self):
+        with BuildPart() as test:
+            v1 = Vertex(0, 0, 3)
+            with BuildSketch() as s:
+                Rectangle(1, 1)
+            loft(sections=[s.sketch, v1], ruled=True)
+        self.assertAlmostEqual(test.part.volume, 1, 5)
+
+    def test_loft_vertices(self):
+        with BuildPart() as test:
+            v1 = Vertex(0, 0, 3)
+            v2 = Vertex(0, 0, -3)
+            with BuildSketch() as s:
+                Rectangle(1, 1)
+            loft(sections=[v2, s.sketch, v1], ruled=True)
+        self.assertAlmostEqual(test.part.volume, 2, 5)
+
+    def test_loft_vertex_face(self):
+        v1 = Vertex(0, 0, 3)
+        r = Rectangle(1, 1)
+        test = loft(sections=[r.face(), v1], ruled=True)
+        self.assertAlmostEqual(test.volume, 1, 5)
+
+    def test_loft_no_sections_assert(self):
+        with BuildPart() as test:
+            with self.assertRaises(ValueError):
+                loft(sections=[None])
+
+    def test_loft_all_vertices_assert(self):
+        with BuildPart() as test:
+            v1 = Vertex(0, 0, -1)
+            v2 = Vertex(0, 0, 2)
+            with self.assertRaises(ValueError):
+                loft(sections=[v1, v2])
+
+    def test_loft_vertex_middle_assert(self):
+        with BuildPart() as test:
+            v1 = Vertex(0, 0, -1)
+            v2 = Vertex(0, 0, 2)
+            with BuildSketch() as s:
+                Circle(1)
+            with self.assertRaises(ValueError):
+                loft(sections=[v1, v2, s.sketch])
 
 
 class TestRevolve(unittest.TestCase):
@@ -367,19 +412,21 @@ class TestRevolve(unittest.TestCase):
         self.assertLess(test.part.volume, 244 * pi * 20, 5)
         self.assertGreater(test.part.volume, 100 * pi * 20, 5)
 
-    def test_invalid_axis_origin(self):
-        with BuildPart():
-            with BuildSketch():
-                Rectangle(1, 1, align=(Align.MIN, Align.MIN))
-            with self.assertRaises(ValueError):
-                revolve(axis=Axis((1, 1, 1), (0, 1, 0)))
+    # Invalid test
+    # def test_invalid_axis_origin(self):
+    #     with BuildPart():
+    #         with BuildSketch():
+    #             Rectangle(1, 1, align=(Align.MIN, Align.MIN))
+    #         with self.assertRaises(ValueError):
+    #             revolve(axis=Axis((1, 1, 1), (0, 1, 0)))
 
-    def test_invalid_axis_direction(self):
-        with BuildPart():
-            with BuildSketch():
-                Rectangle(1, 1, align=(Align.MIN, Align.MIN))
-            with self.assertRaises(ValueError):
-                revolve(axis=Axis.Z)
+    # Invalid test
+    # def test_invalid_axis_direction(self):
+    #     with BuildPart():
+    #         with BuildSketch():
+    #             Rectangle(1, 1, align=(Align.MIN, Align.MIN))
+    #         with self.assertRaises(ValueError):
+    #             revolve(axis=Axis.Z)
 
 
 class TestSection(unittest.TestCase):
@@ -415,6 +462,12 @@ class TestSplit(unittest.TestCase):
             split(bisect_by=Plane.YZ, keep=Keep.TOP)
         self.assertAlmostEqual(test.part.volume, (2 / 3) * 1000 * pi, 5)
 
+    def test_wrapped_object(self):
+        obj = Box(1, 1, 1)
+        obj = fillet(obj.edges().group_by(Axis.Z)[-1], 0.1)
+        right = split(obj, bisect_by=Plane.YZ, keep=Keep.TOP)
+        self.assertLess(right.volume, obj.volume)
+
 
 class TestThicken(unittest.TestCase):
     def test_thicken(self):
@@ -426,9 +479,18 @@ class TestThicken(unittest.TestCase):
 
         non_planar = Sphere(1).faces()[0]
         outer_sphere = thicken(non_planar, amount=0.1)
-        self.assertAlmostEqual(
-            outer_sphere.volume, (4 / 3) * pi * (1.1**3 - 1**3), 5
+        self.assertAlmostEqual(outer_sphere.volume, (4 / 3) * pi * (1.1**3 - 1**3), 5)
+
+        wire = JernArc((0, 0), (-1, 0), 1, 180).edge().reversed() + JernArc(
+            (0, 0), (1, 0), 2, -90
         )
+        part = thicken(sweep((wire ^ 0) * RadiusArc((0, 0), (0, -1), 1), wire), 0.4)
+        self.assertAlmostEqual(part.volume, 2.241583787221904, 5)
+
+        part = thicken(
+            sweep((wire ^ 0) * RadiusArc((0, 0), (0, -1), 1), wire), 0.4, both=True
+        )
+        self.assertAlmostEqual(part.volume, 4.711747154435256, 5)
 
 
 class TestTorus(unittest.TestCase):

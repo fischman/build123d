@@ -25,6 +25,7 @@ license:
     limitations under the License.
 
 """
+
 import unittest
 from build123d import *
 
@@ -34,17 +35,27 @@ class TestEnumRepr(unittest.TestCase):
         enums = [
             Align,
             AngularDirection,
+            ApproxOption,
             CenterOf,
+            Extrinsic,
             FontStyle,
             FrameMethod,
             GeomType,
+            HeadType,
+            Intrinsic,
             Keep,
             Kind,
+            LengthMode,
+            MeshType,
             Mode,
+            NumberDisplay,
             PositionMode,
+            PageSize,
             Select,
+            Side,
             SortBy,
             Transition,
+            Unit,
             Until,
         ]
         for enum in enums:

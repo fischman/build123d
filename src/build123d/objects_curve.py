@@ -25,48 +25,72 @@ license:
     limitations under the License.
 
 """
+
 from __future__ import annotations
 
-import copy
+import copy as copy_module
 from math import copysign, cos, radians, sin, sqrt
-from typing import Iterable, Union
+from scipy.optimize import minimize
+from typing import Union
 
-from build123d.build_common import WorkplaneList, validate_inputs
-from build123d.build_enums import AngularDirection, GeomType, LengthMode, Mode
+from collections.abc import Iterable
+
+from build123d.build_common import WorkplaneList, flatten_sequence, validate_inputs
+from build123d.build_enums import AngularDirection, GeomType, Keep, LengthMode, Mode
 from build123d.build_line import BuildLine
-from build123d.geometry import Axis, Plane, Vector, VectorLike
+from build123d.geometry import Axis, Plane, Vector, VectorLike, TOLERANCE
 from build123d.topology import Edge, Face, Wire, Curve
 
 
-class BaseLineObject(Wire):
-    """BaseLineObject
-
-    Base class for all BuildLine objects
+def _add_curve_to_context(curve, mode: Mode):
+    """Helper function to add a curve to the context.
 
     Args:
-        curve (Union[Edge,Wire]): edge to create
+        curve (Union[Wire, Edge]): curve to add to the context (either a Wire or an Edge).
+        mode (Mode): combination mode.
+    """
+    context: BuildLine | None = BuildLine._get_context(log=False)
+
+    if context is not None and isinstance(context, BuildLine):
+        if isinstance(curve, Wire):
+            context._add_to_context(*curve.edges(), mode=mode)
+        elif isinstance(curve, Edge):
+            context._add_to_context(curve, mode=mode)
+
+
+class BaseLineObject(Wire):
+    """BaseLineObject specialized for Wire.
+
+    Args:
+        curve (Wire): wire to create.
         mode (Mode, optional): combination mode. Defaults to Mode.ADD.
     """
 
     _applies_to = [BuildLine._tag]
 
-    def __init__(
-        self,
-        curve: Union[Edge, Wire],
-        mode: Mode = Mode.ADD,
-    ):
-        context: BuildLine = BuildLine._get_context(self, log=False)
-
-        if context is not None and isinstance(context, BuildLine):
-            context._add_to_context(*curve.edges(), mode=mode)
-
-        if isinstance(curve, Edge):
-            super().__init__(Wire.make_wire([curve]).wrapped)
-        else:
-            super().__init__(curve.wrapped)
+    def __init__(self, curve: Wire, mode: Mode = Mode.ADD):
+        # Use the helper function to handle adding the curve to the context
+        _add_curve_to_context(curve, mode)
+        super().__init__(curve.wrapped)
 
 
-class Bezier(BaseLineObject):
+class BaseEdgeObject(Edge):
+    """BaseEdgeObject specialized for Edge.
+
+    Args:
+        curve (Edge): edge to create.
+        mode (Mode, optional): combination mode. Defaults to Mode.ADD.
+    """
+
+    _applies_to = [BuildLine._tag]
+
+    def __init__(self, curve: Edge, mode: Mode = Mode.ADD):
+        # Use the helper function to handle adding the curve to the context
+        _add_curve_to_context(curve, mode)
+        super().__init__(curve.wrapped)
+
+
+class Bezier(BaseEdgeObject):
     """Line Object: Bezier Curve
 
     Create a rational (with weights) or non-rational bezier curve.  The first and last
@@ -84,19 +108,20 @@ class Bezier(BaseLineObject):
     def __init__(
         self,
         *cntl_pnts: VectorLike,
-        weights: list[float] = None,
+        weights: list[float] | None = None,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        polls = WorkplaneList.localize(*cntl_pnts)
+        cntl_pnt_list = flatten_sequence(*cntl_pnts)
+        polls = WorkplaneList.localize(*cntl_pnt_list)
         curve = Edge.make_bezier(*polls, weights=weights)
 
         super().__init__(curve, mode=mode)
 
 
-class CenterArc(BaseLineObject):
+class CenterArc(BaseEdgeObject):
     """Line Object: Center Arc
 
     Add center arc to the line.
@@ -119,14 +144,16 @@ class CenterArc(BaseLineObject):
         arc_size: float,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         center_point = WorkplaneList.localize(center)
         if context is None:
             circle_workplane = Plane.XY
         else:
-            circle_workplane = copy.copy(WorkplaneList._get_context().workplanes[0])
+            circle_workplane = copy_module.copy(
+                WorkplaneList._get_context().workplanes[0]
+            )
         circle_workplane.origin = center_point
         arc_direction = (
             AngularDirection.COUNTER_CLOCKWISE
@@ -147,7 +174,106 @@ class CenterArc(BaseLineObject):
         super().__init__(arc, mode=mode)
 
 
-class EllipticalStartArc(BaseLineObject):
+class DoubleTangentArc(BaseEdgeObject):
+    """Line Object: Double Tangent Arc
+
+    Create an arc defined by a point/tangent pair and another line which the other end
+    is tangent to.
+
+    Contains a solver.
+
+    Args:
+        pnt (VectorLike): starting point of tangent arc
+        tangent (VectorLike): tangent at starting point of tangent arc
+        other (Union[Curve, Edge, Wire]): reference line
+        keep (Keep, optional): selector for which arc to keep when two arcs are
+            possible. The arc generated with TOP or BOTTOM depends on the geometry
+            and isn't necessarily easy to predict. Defaults to Keep.TOP.
+        mode (Mode, optional): combination mode. Defaults to Mode.ADD.
+
+    Raises:
+        RunTimeError: no double tangent arcs found
+    """
+
+    _applies_to = [BuildLine._tag]
+
+    def __init__(
+        self,
+        pnt: VectorLike,
+        tangent: VectorLike,
+        other: Curve | Edge | Wire,
+        keep: Keep = Keep.TOP,
+        mode: Mode = Mode.ADD,
+    ):
+        context: BuildLine | None = BuildLine._get_context(self)
+        validate_inputs(context, self)
+
+        arc_pt = WorkplaneList.localize(pnt)
+        arc_tangent = WorkplaneList.localize(tangent).normalized()
+        if WorkplaneList._get_context() is not None:
+            workplane = WorkplaneList._get_context().workplanes[0]
+        else:
+            workplane = Edge.make_line(arc_pt, arc_pt + arc_tangent).common_plane(
+                *other.edges()
+            )
+            if workplane is None:
+                raise ValueError("DoubleTangentArc only works on a single plane")
+            workplane = -workplane  # Flip to help with TOP/BOTTOM
+        rotation_axis = Axis((0, 0, 0), workplane.z_dir)
+        # Protect against massive circles that are effectively straight lines
+        max_size = 10 * other.bounding_box().add(arc_pt).diagonal
+
+        # Function to be minimized - note radius is a numpy array
+        def func(radius, perpendicular_bisector):
+            center = arc_pt + perpendicular_bisector * radius[0]
+            separation = other.distance_to(center)
+            return abs(separation - radius)
+
+        # Minimize the function using bounds and the tolerance value
+        arc_centers = []
+        for angle in [90, -90]:
+            perpendicular_bisector = arc_tangent.rotate(rotation_axis, angle)
+            result = minimize(
+                func,
+                x0=0.0,
+                args=perpendicular_bisector,
+                method="Nelder-Mead",
+                bounds=[(0.0, max_size)],
+                tol=TOLERANCE,
+            )
+            arc_radius = result.x[0]
+            arc_center = arc_pt + perpendicular_bisector * arc_radius
+
+            # Check for matching tangents
+            circle = Edge.make_circle(
+                arc_radius, Plane(arc_center, z_dir=rotation_axis.direction)
+            )
+            dist, p1, p2 = other.distance_to_with_closest_points(circle)
+            if dist > TOLERANCE:  # If they aren't touching
+                continue
+            other_axis = Axis(p1, other.tangent_at(p1))
+            circle_axis = Axis(p2, circle.tangent_at(p2))
+            if other_axis.is_parallel(circle_axis, 0.05):
+                arc_centers.append(arc_center)
+
+        if len(arc_centers) == 0:
+            raise RuntimeError("No double tangent arcs found")
+
+        # If there are multiple solutions, select the desired one
+        if keep == Keep.TOP:
+            arc_centers = arc_centers[0:1]
+        elif keep == Keep.BOTTOM:
+            arc_centers = arc_centers[-1:]
+
+        with BuildLine() as double:
+            for center in arc_centers:
+                _, p1, _ = other.distance_to_with_closest_points(center)
+                TangentArc(arc_pt, p1, tangent=arc_tangent)
+
+        super().__init__(double.wire(), mode=mode)
+
+
+class EllipticalStartArc(BaseEdgeObject):
     """Line Object: Elliptical Start Arc
 
     Makes an arc of an ellipse from the start point.
@@ -180,11 +306,11 @@ class EllipticalStartArc(BaseLineObject):
         sweep_flag: bool = True,
         plane: Plane = Plane.XY,
         mode: Mode = Mode.ADD,
-    ) -> Edge:
+    ):
         # Debugging incomplete
         raise RuntimeError("Implementation incomplete")
 
-        # context: BuildLine = BuildLine._get_context(self)
+        # context: BuildLine | None = BuildLine._get_context(self)
         # context.validate_inputs(self)
 
         # # Calculate the ellipse parameters based on the SVG implementation here:
@@ -250,10 +376,10 @@ class EllipticalStartArc(BaseLineObject):
         # context._add_to_context(curve, mode=mode)
         # super().__init__(curve.wrapped)
 
-        # context: BuildLine = BuildLine._get_context(self)
+        # context: BuildLine | None = BuildLine._get_context(self)
 
 
-class EllipticalCenterArc(BaseLineObject):
+class EllipticalCenterArc(BaseEdgeObject):
     """Line Object: Elliptical Center Arc
 
     Makes an arc of an ellipse from a center point.
@@ -284,14 +410,16 @@ class EllipticalCenterArc(BaseLineObject):
         angular_direction: AngularDirection = AngularDirection.COUNTER_CLOCKWISE,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         center_pnt = WorkplaneList.localize(center)
         if context is None:
             ellipse_workplane = Plane.XY
         else:
-            ellipse_workplane = copy.copy(WorkplaneList._get_context().workplanes[0])
+            ellipse_workplane = copy_module.copy(
+                WorkplaneList._get_context().workplanes[0]
+            )
         ellipse_workplane.origin = center_pnt
         curve = Edge.make_ellipse(
             x_radius=x_radius,
@@ -307,7 +435,7 @@ class EllipticalCenterArc(BaseLineObject):
         super().__init__(curve, mode=mode)
 
 
-class Helix(BaseLineObject):
+class Helix(BaseEdgeObject):
     """Line Object: Helix
 
     Add a helix to the line.
@@ -336,7 +464,7 @@ class Helix(BaseLineObject):
         lefthand: bool = False,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         center_pnt = WorkplaneList.localize(center)
@@ -353,13 +481,13 @@ class FilletPolyline(BaseLineObject):
     are filleted to a given radius.
 
     Args:
-        pts (VectorLike): sequence of three or more points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of two or more points
         radius (float): radius of filleted corners
         close (bool, optional): close by generating an extra Edge. Defaults to False.
         mode (Mode, optional): combination mode. Defaults to Mode.ADD.
 
     Raises:
-        ValueError: Three or more points not provided
+        ValueError: Two or more points not provided
         ValueError: radius must be positive
     """
 
@@ -367,20 +495,22 @@ class FilletPolyline(BaseLineObject):
 
     def __init__(
         self,
-        *pts: VectorLike,
+        *pts: VectorLike | Iterable[VectorLike],
         radius: float,
         close: bool = False,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        if len(pts) < 3:
-            raise ValueError("filletpolyline requires three or more pts")
+        points = flatten_sequence(*pts)
+
+        if len(points) < 2:
+            raise ValueError("FilletPolyline requires two or more pts")
         if radius <= 0:
             raise ValueError("radius must be positive")
 
-        lines_pts = WorkplaneList.localize(*pts)
+        lines_pts = WorkplaneList.localize(*points)
 
         # Create the polyline
         new_edges = [
@@ -389,7 +519,7 @@ class FilletPolyline(BaseLineObject):
         ]
         if close and (new_edges[0] @ 0 - new_edges[-1] @ 1).length > 1e-5:
             new_edges.append(Edge.make_line(new_edges[-1] @ 1, new_edges[0] @ 0))
-        wire_of_lines = Wire.make_wire(new_edges)
+        wire_of_lines = Wire(new_edges)
 
         # Create a list of vertices from wire_of_lines in the same order as
         # the original points so the resulting fillet edges are ordered
@@ -413,13 +543,9 @@ class FilletPolyline(BaseLineObject):
         for vertex, edges in vertex_to_edges.items():
             if len(edges) != 2:
                 continue
-            other_vertices = set(
-                ve for e in edges for ve in e.vertices() if ve != vertex
-            )
+            other_vertices = {ve for e in edges for ve in e.vertices() if ve != vertex}
             third_edge = Edge.make_line(*[v.to_tuple() for v in other_vertices])
-            fillet_face = Face.make_from_wires(
-                Wire.make_wire(edges + [third_edge])
-            ).fillet_2d(radius, [vertex])
+            fillet_face = Face(Wire(edges + [third_edge])).fillet_2d(radius, [vertex])
             fillets.append(fillet_face.edges().filter_by(GeomType.CIRCLE)[0])
 
         # Create the Edges that join the fillets
@@ -438,12 +564,12 @@ class FilletPolyline(BaseLineObject):
                 Edge.make_line(fillets[-1] @ 1, wire_of_lines @ 1),
             ]
 
-        new_wire = Wire.make_wire(end_edges + interior_edges + fillets)
+        new_wire = Wire(end_edges + interior_edges + fillets)
 
         super().__init__(new_wire, mode=mode)
 
 
-class JernArc(BaseLineObject):
+class JernArc(BaseEdgeObject):
     """JernArc
 
     Circular tangent arc with given radius and arc_size
@@ -471,17 +597,21 @@ class JernArc(BaseLineObject):
         arc_size: float,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         start = WorkplaneList.localize(start)
         self.start = start
-        start_tangent = WorkplaneList.localize(tangent).normalized()
         if context is None:
             jern_workplane = Plane.XY
         else:
-            jern_workplane = copy.copy(WorkplaneList._get_context().workplanes[0])
+            jern_workplane = copy_module.copy(
+                WorkplaneList._get_context().workplanes[0]
+            )
         jern_workplane.origin = start
+        start_tangent = Vector(tangent).transform(
+            jern_workplane.reverse_transform, is_direction=True
+        )
 
         arc_direction = copysign(1.0, arc_size)
         self.center_point = start + start_tangent.rotate(
@@ -491,8 +621,9 @@ class JernArc(BaseLineObject):
             Axis(start, jern_workplane.z_dir), arc_size
         )
         if abs(arc_size) >= 360:
-            circle_plane = copy.copy(jern_workplane)
+            circle_plane = copy_module.copy(jern_workplane)
             circle_plane.origin = self.center_point
+            circle_plane.x_dir = self.start - circle_plane.origin
             arc = Edge.make_circle(radius, circle_plane)
         else:
             arc = Edge.make_tangent_arc(start, start_tangent, self.end_of_arc)
@@ -500,13 +631,13 @@ class JernArc(BaseLineObject):
         super().__init__(arc, mode=mode)
 
 
-class Line(BaseLineObject):
+class Line(BaseEdgeObject):
     """Line Object: Line
 
     Add a straight line defined by two end points.
 
     Args:
-        pts (VectorLike): sequence of two points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of two points
         mode (Mode, optional): combination mode. Defaults to Mode.ADD.
 
     Raises:
@@ -515,22 +646,23 @@ class Line(BaseLineObject):
 
     _applies_to = [BuildLine._tag]
 
-    def __init__(self, *pts: VectorLike, mode: Mode = Mode.ADD):
-        if len(pts) != 2:
+    def __init__(self, *pts: VectorLike | Iterable[VectorLike], mode: Mode = Mode.ADD):
+        points = flatten_sequence(*pts)
+        if len(points) != 2:
             raise ValueError("Line requires two pts")
 
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        pts = WorkplaneList.localize(*pts)
+        points_localized = WorkplaneList.localize(*points)
 
-        lines_pts = [Vector(p) for p in pts]
+        lines_pts = [Vector(p) for p in points_localized]
 
         new_edge = Edge.make_line(lines_pts[0], lines_pts[1])
         super().__init__(new_edge, mode=mode)
 
 
-class IntersectingLine(BaseLineObject):
+class IntersectingLine(BaseEdgeObject):
     """Intersecting Line Object: Line
 
     Add a straight line that intersects another line at a given parameter and angle.
@@ -549,10 +681,10 @@ class IntersectingLine(BaseLineObject):
         self,
         start: VectorLike,
         direction: VectorLike,
-        other: Union[Curve, Edge, Wire],
+        other: Curve | Edge | Wire,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         start = WorkplaneList.localize(start)
@@ -560,7 +692,7 @@ class IntersectingLine(BaseLineObject):
         axis = Axis(start, direction)
 
         intersection_pnts = [
-            i for edge in other.edges() for i in edge.intersections(axis)
+            i for edge in other.edges() for i in edge.find_intersection_points(axis)
         ]
         if not intersection_pnts:
             raise ValueError("No intersections found")
@@ -571,7 +703,7 @@ class IntersectingLine(BaseLineObject):
         super().__init__(new_edge, mode=mode)
 
 
-class PolarLine(BaseLineObject):
+class PolarLine(BaseEdgeObject):
     """Line Object: Polar Line
 
     Add line defined by a start point, length and angle.
@@ -594,25 +726,27 @@ class PolarLine(BaseLineObject):
         self,
         start: VectorLike,
         length: float,
-        angle: float = None,
-        direction: VectorLike = None,
+        angle: float | None = None,
+        direction: VectorLike | None = None,
         length_mode: LengthMode = LengthMode.DIAGONAL,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         start = WorkplaneList.localize(start)
         if context is None:
             polar_workplane = Plane.XY
         else:
-            polar_workplane = copy.copy(WorkplaneList._get_context().workplanes[0])
+            polar_workplane = copy_module.copy(
+                WorkplaneList._get_context().workplanes[0]
+            )
 
-        if direction:
-            direction = WorkplaneList.localize(direction)
-            angle = Vector(1, 0, 0).get_angle(direction)
+        if direction is not None:
+            direction_localized = WorkplaneList.localize(direction)
+            angle = Vector(1, 0, 0).get_angle(direction_localized)
         elif angle is not None:
-            direction = polar_workplane.x_dir.rotate(
+            direction_localized = polar_workplane.x_dir.rotate(
                 Axis((0, 0, 0), polar_workplane.z_dir),
                 angle,
             )
@@ -620,11 +754,11 @@ class PolarLine(BaseLineObject):
             raise ValueError("Either angle or direction must be provided")
 
         if length_mode == LengthMode.DIAGONAL:
-            length_vector = direction * length
+            length_vector = direction_localized * length
         elif length_mode == LengthMode.HORIZONTAL:
-            length_vector = direction * (length / cos(radians(angle)))
+            length_vector = direction_localized * (length / cos(radians(angle)))
         elif length_mode == LengthMode.VERTICAL:
-            length_vector = direction * (length / sin(radians(angle)))
+            length_vector = direction_localized * (length / sin(radians(angle)))
 
         new_edge = Edge.make_line(start, start + length_vector)
 
@@ -637,24 +771,30 @@ class Polyline(BaseLineObject):
     Add a sequence of straight lines defined by successive point pairs.
 
     Args:
-        pts (VectorLike): sequence of three or more points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of two or more points
         close (bool, optional): close by generating an extra Edge. Defaults to False.
         mode (Mode, optional): combination mode. Defaults to Mode.ADD.
 
     Raises:
-        ValueError: Three or more points not provided
+        ValueError: Two or more points not provided
     """
 
     _applies_to = [BuildLine._tag]
 
-    def __init__(self, *pts: VectorLike, close: bool = False, mode: Mode = Mode.ADD):
-        context: BuildLine = BuildLine._get_context(self)
+    def __init__(
+        self,
+        *pts: VectorLike | Iterable[VectorLike],
+        close: bool = False,
+        mode: Mode = Mode.ADD,
+    ):
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        if len(pts) < 3:
-            raise ValueError("polyline requires three or more pts")
+        points = flatten_sequence(*pts)
+        if len(points) < 2:
+            raise ValueError("Polyline requires two or more pts")
 
-        lines_pts = WorkplaneList.localize(*pts)
+        lines_pts = WorkplaneList.localize(*points)
 
         new_edges = [
             Edge.make_line(lines_pts[i], lines_pts[i + 1])
@@ -666,7 +806,7 @@ class Polyline(BaseLineObject):
         super().__init__(Wire.combine(new_edges)[0], mode=mode)
 
 
-class RadiusArc(BaseLineObject):
+class RadiusArc(BaseEdgeObject):
     """Line Object: Radius Arc
 
     Add an arc defined by two end points and a radius
@@ -693,7 +833,7 @@ class RadiusArc(BaseLineObject):
         short_sagitta: bool = True,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         start, end = WorkplaneList.localize(start_point, end_point)
@@ -718,7 +858,7 @@ class RadiusArc(BaseLineObject):
         super().__init__(arc, mode=mode)
 
 
-class SagittaArc(BaseLineObject):
+class SagittaArc(BaseEdgeObject):
     """Line Object: Sagitta Arc
 
     Add an arc defined by two points and the height of the arc (sagitta).
@@ -739,7 +879,7 @@ class SagittaArc(BaseLineObject):
         sagitta: float,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
         start, end = WorkplaneList.localize(start_point, end_point)
@@ -747,7 +887,9 @@ class SagittaArc(BaseLineObject):
         if context is None:
             sagitta_workplane = Plane.XY
         else:
-            sagitta_workplane = copy.copy(WorkplaneList._get_context().workplanes[0])
+            sagitta_workplane = copy_module.copy(
+                WorkplaneList._get_context().workplanes[0]
+            )
         sagitta_vector: Vector = (end - start).normalized() * abs(sagitta)
         sagitta_vector = sagitta_vector.rotate(
             Axis(sagitta_workplane.origin, sagitta_workplane.z_dir),
@@ -760,13 +902,13 @@ class SagittaArc(BaseLineObject):
         super().__init__(arc, mode=mode)
 
 
-class Spline(BaseLineObject):
+class Spline(BaseEdgeObject):
     """Line Object: Spline
 
     Add a spline through the provided points optionally constrained by tangents.
 
     Args:
-        pts (VectorLike): sequence of two or more points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of two or more points
         tangents (Iterable[VectorLike], optional): tangents at end points. Defaults to None.
         tangent_scalars (Iterable[float], optional): change shape by amplifying tangent.
             Defaults to None.
@@ -778,16 +920,17 @@ class Spline(BaseLineObject):
 
     def __init__(
         self,
-        *pts: VectorLike,
-        tangents: Iterable[VectorLike] = None,
-        tangent_scalars: Iterable[float] = None,
+        *pts: VectorLike | Iterable[VectorLike],
+        tangents: Iterable[VectorLike] | None = None,
+        tangent_scalars: Iterable[float] | None = None,
         periodic: bool = False,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        points = flatten_sequence(*pts)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        spline_pts = WorkplaneList.localize(*pts)
+        spline_pts = WorkplaneList.localize(*points)
 
         if tangents:
             spline_tangents = [
@@ -796,32 +939,34 @@ class Spline(BaseLineObject):
         else:
             spline_tangents = None
 
-        if tangents and not tangent_scalars:
-            scalars = [1.0] * len(tangents)
+        if tangents is not None and tangent_scalars is None:
+            scalars = [1.0] * len(list(tangents))
         else:
-            scalars = tangent_scalars
+            scalars = list(tangent_scalars) if tangent_scalars is not None else []
 
         spline = Edge.make_spline(
             [p if isinstance(p, Vector) else Vector(*p) for p in spline_pts],
-            tangents=[
-                t * s if isinstance(t, Vector) else Vector(*t) * s
-                for t, s in zip(spline_tangents, scalars)
-            ]
-            if spline_tangents
-            else None,
+            tangents=(
+                [
+                    t * s if isinstance(t, Vector) else Vector(*t) * s
+                    for t, s in zip(spline_tangents, scalars)
+                ]
+                if spline_tangents
+                else None
+            ),
             periodic=periodic,
             scale=tangent_scalars is None,
         )
         super().__init__(spline, mode=mode)
 
 
-class TangentArc(BaseLineObject):
+class TangentArc(BaseEdgeObject):
     """Line Object: Tangent Arc
 
     Add an arc defined by two points and a tangent.
 
     Args:
-        pts (VectorLike): sequence of two points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of two points
         tangent (VectorLike): tangent to constrain arc
         tangent_from_first (bool, optional): apply tangent to first point. Note, applying
             tangent to end point will flip the orientation of the arc. Defaults to True.
@@ -835,17 +980,18 @@ class TangentArc(BaseLineObject):
 
     def __init__(
         self,
-        *pts: VectorLike,
+        *pts: VectorLike | Iterable[VectorLike],
         tangent: VectorLike,
         tangent_from_first: bool = True,
         mode: Mode = Mode.ADD,
     ):
-        context: BuildLine = BuildLine._get_context(self)
+        points = flatten_sequence(*pts)
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        if len(pts) != 2:
+        if len(points) != 2:
             raise ValueError("tangent_arc requires two points")
-        arc_pts = WorkplaneList.localize(*pts)
+        arc_pts = WorkplaneList.localize(*points)
         arc_tangent = WorkplaneList.localize(tangent).normalized()
 
         point_indices = (0, -1) if tangent_from_first else (-1, 0)
@@ -856,13 +1002,13 @@ class TangentArc(BaseLineObject):
         super().__init__(arc, mode=mode)
 
 
-class ThreePointArc(BaseLineObject):
+class ThreePointArc(BaseEdgeObject):
     """Line Object: Three Point Arc
 
     Add an arc generated by three points.
 
     Args:
-        pts (VectorLike): sequence of three points
+        pts (Union[VectorLike, Iterable[VectorLike]]): sequence of three points
         mode (Mode, optional): combination mode. Defaults to Mode.ADD.
 
     Raises:
@@ -871,13 +1017,14 @@ class ThreePointArc(BaseLineObject):
 
     _applies_to = [BuildLine._tag]
 
-    def __init__(self, *pts: VectorLike, mode: Mode = Mode.ADD):
-        context: BuildLine = BuildLine._get_context(self)
+    def __init__(self, *pts: VectorLike | Iterable[VectorLike], mode: Mode = Mode.ADD):
+        context: BuildLine | None = BuildLine._get_context(self)
         validate_inputs(context, self)
 
-        if len(pts) != 3:
+        points = flatten_sequence(*pts)
+        if len(points) != 3:
             raise ValueError("ThreePointArc requires three points")
-        points = WorkplaneList.localize(*pts)
-        arc = Edge.make_three_point_arc(*points)
+        points_localized = WorkplaneList.localize(*points)
+        arc = Edge.make_three_point_arc(*points_localized)
 
         super().__init__(arc, mode=mode)

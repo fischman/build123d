@@ -25,8 +25,13 @@ license:
     limitations under the License.
 
 """
+
 from __future__ import annotations
+
 from enum import Enum, auto
+from typing import Union
+
+from typing import TypeAlias
 
 
 class Align(Enum):
@@ -35,9 +40,21 @@ class Align(Enum):
     MIN = auto()
     CENTER = auto()
     MAX = auto()
+    NONE = None
 
     def __repr__(self):
         return f"<{self.__class__.__name__}.{self.name}>"
+
+
+Align2DType: TypeAlias = Union[
+    Union[Align, None],
+    tuple[Union[Align, None], Union[Align, None]],
+]
+
+Align3DType: TypeAlias = Union[
+    Union[Align, None],
+    tuple[Union[Align, None], Union[Align, None], Union[Align, None]],
+]
 
 
 class ApproxOption(Enum):
@@ -67,6 +84,27 @@ class CenterOf(Enum):
     GEOMETRY = auto()
     MASS = auto()
     BOUNDING_BOX = auto()
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}.{self.name}>"
+
+
+class Extrinsic(Enum):
+    """Order to apply extrinsic rotations by axis"""
+
+    XYZ = auto()
+    XZY = auto()
+    YZX = auto()
+    YXZ = auto()
+    ZXY = auto()
+    ZYX = auto()
+
+    XYX = auto()
+    XZX = auto()
+    YZY = auto()
+    YXY = auto()
+    ZXZ = auto()
+    ZYZ = auto()
 
     def __repr__(self):
         return f"<{self.__class__.__name__}.{self.name}>"
@@ -117,12 +155,36 @@ class HeadType(Enum):
         return f"<{self.__class__.__name__}.{self.name}>"
 
 
+class Intrinsic(Enum):
+    """Order to apply intrinsic rotations by axis"""
+
+    XYZ = auto()
+    XZY = auto()
+    YZX = auto()
+    YXZ = auto()
+    ZXY = auto()
+    ZYX = auto()
+
+    XYX = auto()
+    XZX = auto()
+    YZY = auto()
+    YXY = auto()
+    ZXZ = auto()
+    ZYZ = auto()
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}.{self.name}>"
+
+
 class Keep(Enum):
     """Split options"""
 
-    TOP = auto()
+    ALL = auto()
     BOTTOM = auto()
     BOTH = auto()
+    INSIDE = auto()
+    OUTSIDE = auto()
+    TOP = auto()
 
     def __repr__(self):
         return f"<{self.__class__.__name__}.{self.name}>"
@@ -223,6 +285,25 @@ class PositionMode(Enum):
 
     LENGTH = auto()
     PARAMETER = auto()
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}.{self.name}>"
+
+
+class PrecisionMode(Enum):
+    """
+    When you export a model to a STEP file, the precision of the geometric data
+    (such as the coordinates of points, the definitions of curves and surfaces, etc.)
+    can significantly impact the file size and the fidelity of the model when it is
+    imported into another CAD system. Higher precision means that the geometric
+    data is described with more detail, which can improve the accuracy of the model
+    in the target system but can also increase the file size.
+    """
+
+    SESSION = 2
+    GREATEST = 1
+    AVERAGE = 0
+    LEAST = -1
 
     def __repr__(self):
         return f"<{self.__class__.__name__}.{self.name}>"

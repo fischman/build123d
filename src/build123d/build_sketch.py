@@ -25,14 +25,15 @@ license:
     limitations under the License.
 
 """
+
 from __future__ import annotations
 
 from typing import Union
 
-from build123d.build_common import Builder, WorkplaneList, logger
+from build123d.build_common import Builder, WorkplaneList
 from build123d.build_enums import Mode
 from build123d.geometry import Location, Plane
-from build123d.topology import Compound, Edge, Face, ShapeList, Sketch, Wire, Vertex
+from build123d.topology import Compound, Edge, Face, ShapeList, Sketch, Wire
 
 
 class BuildSketch(Builder):
@@ -49,7 +50,7 @@ class BuildSketch(Builder):
     Note that all sketch construction is done within sketch_local on Plane.XY.
     When objects are added to the sketch they must be coplanar to Plane.XY,
     usually handled automatically but may need user input for Edges and Wires
-    since their construction plane isn't alway able to be determined.
+    since their construction plane isn't always able to be determined.
 
     Args:
         workplanes (Union[Face, Plane, Location], optional): objects converted to
@@ -62,14 +63,27 @@ class BuildSketch(Builder):
     _shape = Face  # Type of shapes being constructed
     _sub_class = Sketch  # Class of sketch/_obj
 
-    @property
-    def _obj(self) -> Sketch:
-        """The builder's object"""
-        return self.sketch_local
+    def __init__(
+        self,
+        *workplanes: Face | Plane | Location,
+        mode: Mode = Mode.ADD,
+    ):
+        self.mode = mode
+        self._sketch_local: Sketch | None = None
+        self.pending_edges: ShapeList[Edge] = ShapeList()
+        super().__init__(*workplanes, mode=mode)
 
-    @_obj.setter
-    def _obj(self, value: Sketch) -> None:
-        self.sketch_local = value
+    @property
+    def sketch_local(self) -> Sketch | None:
+        """Get the builder's object"""
+        return self._sketch_local
+
+    @sketch_local.setter
+    def sketch_local(self, value: Sketch) -> None:
+        """Set the builder's object"""
+        self._sketch_local = value
+
+    _obj = sketch_local  # Alias _obj to sketch_local
 
     @property
     def sketch(self):
@@ -81,19 +95,8 @@ class BuildSketch(Builder):
         )
         global_objs = []
         for plane in workplanes:
-            for face in self._obj.faces():
-                global_objs.append(plane.from_local_coords(face))
-        return Sketch(Compound.make_compound(global_objs).wrapped)
-
-    def __init__(
-        self,
-        *workplanes: Union[Face, Plane, Location],
-        mode: Mode = Mode.ADD,
-    ):
-        self.mode = mode
-        self.sketch_local: Sketch = None
-        self.pending_edges: ShapeList[Edge] = ShapeList()
-        super().__init__(*workplanes, mode=mode)
+            global_objs.append(plane.from_local_coords(self._obj))
+        return Sketch(Compound(global_objs).wrapped)
 
     def solids(self, *args):
         """solids() not implemented"""
@@ -103,11 +106,13 @@ class BuildSketch(Builder):
         """solid() not implemented"""
         raise NotImplementedError("solid() doesn't apply to BuildSketch")
 
-    def consolidate_edges(self) -> Union[Wire, list[Wire]]:
+    def consolidate_edges(self) -> Wire | list[Wire]:
         """Unify pending edges into one or more Wires"""
         wires = Wire.combine(self.pending_edges)
         return wires if len(wires) > 1 else wires[0]
 
-    def _add_to_pending(self, *objects: Edge):
+    def _add_to_pending(self, *objects: Edge, face_plane: Plane | None = None):
         """Integrate a sequence of objects into existing builder object"""
+        if face_plane:
+            raise NotImplementedError("face_plane arg not supported for this method")
         self.pending_edges.extend(objects)

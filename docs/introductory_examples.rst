@@ -2,22 +2,23 @@
 Introductory Examples
 #########################
 
-The examples on this page can help you learn how to build objects with Build123d, and are intended as a general overview of Build123d.
+The examples on this page can help you learn how to build objects with build123d, and are intended as a general overview of build123d.
 
 They are organized from simple to complex, so working through them in order is the best way to absorb them.
 
 .. note::
 
-    Some important lines are omitted below to save space, so you will most likely need to add 1 & 2 or 3 to the provided code below for them to work:
+    Some important lines are omitted below to save space, so you will most likely need to add 1 & 2 to the provided code below for them to work:
 
        1. ``from build123d import *``
-       2. If you are using Build123d *context mode*,
+       2. If you are using build123d *builder mode* or *algebra mode*,
 
-            - in *CQ-editor* add e.g. ``show_object(ex15.part)``, ``show_object(ex15.sketch)`` or ``show_object(ex15.line)`` to view parts, sketches or lines.
-            - in *ocp_vscode* simply use e.g. ``show_object(ex15)`` for parts, sketches and curves.
+            - in *ocp_vscode* simply use e.g. ``show(ex15)`` to the end of your design to view parts, sketches and curves. ``show_all()`` can be used to automatically show all objects with their variable names as labels.
+            - in *CQ-editor* add e.g. ``show_object(ex15.part)``, ``show_object(ex15.sketch)`` or ``show_object(ex15.line)`` to the end of your design to view parts, sketches or lines.
 
-       3. If you are using Build123d *algebra mode*, add the line e.g. ``show_object(ex15)`` for parts, sketches and curves at the end.
-       4. If you want to save your resulting file as an STL, it is currently best to use e.g. ``ex15.part.export_stl("file.stl")``.
+       3. If you want to save your resulting object as an STL from *builder mode*, you can use e.g. ``export_stl(ex15.part, "file.stl")``.
+       4. If you want to save your resulting object as an STL from *algebra mode*, you can use e.g. ``export_stl(ex15, "file.stl")``
+       5. build123d also supports exporting to multiple other file formats including STEP, see here for further information: `Import/Export Formats <https://build123d.readthedocs.io/en/latest/import_export.html>`_
 
 .. contents:: List of Examples
     :backlinks: entry
@@ -384,8 +385,6 @@ edge that needs a complex profile.
         :start-after: [Ex. 12]
         :end-before: [Ex. 12]
 
-The star ``*`` operator is again used to unpack the list.
-
 
 .. _ex 13:
 
@@ -421,13 +420,14 @@ Counter-sink and counter-bore holes are useful for creating recessed areas for f
 14. Position on a line with '\@', '\%' and introduce Sweep
 ------------------------------------------------------------
 
-Build123d includes a feature for finding the position along a line segment. This
-is normalized between 0 and 1 and can be accessed using the :meth:`~topology.Mixin1D.position_at` operator.
-Similarly the :meth:`~topology.Mixin1D.tangent_at` operator returns the line direction at a given point.
+build123d includes a feature for finding the position along a line segment. This
+is normalized between 0 and 1 and can be accessed using the :meth:`~topology.Mixin1D.position_at` (`@`) operator.
+Similarly the :meth:`~topology.Mixin1D.tangent_at` (`%`) operator returns the line direction at a given point.
 
 These two features are very powerful for chaining line segments together without
 having to repeat dimensions again and again, which is error prone, time
-consuming, and more difficult to maintain.
+consuming, and more difficult to maintain. The pending faces must lie on the
+path, please see example 37 for a way to make this placement easier.
 
 
 .. image:: assets/general_ex14.svg
@@ -437,8 +437,7 @@ consuming, and more difficult to maintain.
 
     The :meth:`~operations_generic.sweep` method takes any pending faces and sweeps them through the provided
     path (in this case the path is taken from the pending edges from ``ex14_ln``).
-    :meth:`~operations_part.revolve` requires a single connected wire. The pending faces must lie on the
-    path.
+    :meth:`~operations_part.revolve` requires a single connected wire. 
 
     .. literalinclude:: general_examples.py
         :start-after: [Ex. 14]
@@ -447,13 +446,13 @@ consuming, and more difficult to maintain.
 * **Algebra mode**
 
     The :meth:`~operations_generic.sweep` method takes any faces and sweeps them through the provided
-    path (in this case the path is taken from the pending edges from ``ex14_ln``).
+    path (in this case the path is taken from ``ex14_ln``).
 
     .. literalinclude:: general_examples_algebra.py
         :start-after: [Ex. 14]
         :end-before: [Ex. 14]
 
-It is also possible to use :class:`~geometry.Vector` addition (and other vector math operations)
+It is also possible to use tuple or :class:`~geometry.Vector` addition (and other vector math operations)
 as seen in the ``l3`` variable.
 
 .. _ex 15:
@@ -840,7 +839,7 @@ We are able to create multiple workplanes by looping over the list of faces.
 29. The Classic OCC Bottle
 ---------------------------------------------------
 
-Build123d is based on the OpenCascade.org (OCC) modeling Kernel. Those who are familiar with OCC
+build123d is based on the OpenCascade.org (OCC) modeling Kernel. Those who are familiar with OCC
 know about the famous ‘bottle’ example. We use a 3D Offset and the openings parameter to create
 the bottle opening.
 

@@ -25,6 +25,7 @@ license:
     limitations under the License.
 
 """
+
 from __future__ import annotations
 
 from typing import Union
@@ -68,21 +69,27 @@ class BuildLine(Builder):
     _shape = Edge  # Type of shapes being constructed
     _sub_class = Curve  # Class of line/_obj
 
-    @property
-    def _obj(self) -> Curve:
-        return self.line
-
-    @_obj.setter
-    def _obj(self, value: Curve) -> None:
-        self.line = value
-
     def __init__(
         self,
-        workplane: Union[Face, Plane, Location] = Plane.XY,
+        workplane: Face | Plane | Location = Plane.XY,
         mode: Mode = Mode.ADD,
     ):
-        self.line: Curve = None
+        self._line: Curve | None = None
         super().__init__(workplane, mode=mode)
+        if len(self.workplanes) > 1:
+            raise ValueError("BuildLine only accepts one workplane")
+
+    @property
+    def line(self) -> Curve | None:
+        """Get the current line"""
+        return self._line
+
+    @line.setter
+    def line(self, value: Curve) -> None:
+        """Set the current line"""
+        self._line = value
+
+    _obj = line  # Alias _obj to line
 
     def __exit__(self, exception_type, exception_value, traceback):
         """Upon exiting restore context and send object to parent"""
@@ -123,6 +130,6 @@ class BuildLine(Builder):
         """solid() not implemented"""
         raise NotImplementedError("solid() doesn't apply to BuildLine")
 
-    def _add_to_pending(self, *objects: Union[Edge, Face], face_plane: Plane = None):
+    def _add_to_pending(self, *objects: Edge | Face, face_plane: Plane | None = None):
         """_add_to_pending not implemented"""
         raise NotImplementedError("_add_to_pending doesn't apply to BuildLine")

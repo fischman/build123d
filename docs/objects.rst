@@ -90,6 +90,13 @@ The following objects all can be used in BuildLine contexts. Note that
         +++
         Arc defined by center, radius, & angles
 
+    .. grid-item-card:: :class:`~objects_curve.DoubleTangentArc`
+
+        .. image:: assets/double_tangent_line_example.svg
+
+        +++
+        Arc defined by point/tangent pair & other curve
+
     .. grid-item-card:: :class:`~objects_curve.EllipticalCenterArc`
 
         .. image:: assets/elliptical_center_arc_example.svg
@@ -110,6 +117,13 @@ The following objects all can be used in BuildLine contexts. Note that
 
         +++
         Helix defined pitch, radius and height
+
+    .. grid-item-card:: :class:`~objects_curve.IntersectingLine`
+
+        .. image:: assets/intersecting_line_example.svg
+
+        +++
+        Intersecting line defined by start, direction & other line
 
     .. grid-item-card:: :class:`~objects_curve.JernArc`
 
@@ -182,9 +196,11 @@ Reference
 .. autoclass:: BaseLineObject
 .. autoclass:: Bezier
 .. autoclass:: CenterArc
+.. autoclass:: DoubleTangentArc
 .. autoclass:: EllipticalCenterArc
 .. autoclass:: FilletPolyline
 .. autoclass:: Helix
+.. autoclass:: IntersectingLine
 .. autoclass:: JernArc
 .. autoclass:: Line
 .. autoclass:: PolarLine
@@ -321,6 +337,12 @@ Reference
         +++
         Trapezoid defined by width, height and interior angles
 
+    .. grid-item-card:: :class:`~objects_sketch.Triangle`
+
+        .. image:: assets/triangle_example.svg
+
+        +++
+        Triangle defined by one side & two other sides or interior angles
 
 
 Reference
@@ -345,6 +367,7 @@ Reference
 .. autoclass:: drafting.TechnicalDrawing
 .. autoclass:: Text
 .. autoclass:: Trapezoid
+.. autoclass:: Triangle
 
 3D Objects
 ----------

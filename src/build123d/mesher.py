@@ -78,16 +78,22 @@ license:
     See the License for the specific language governing permissions and
     limitations under the License.
 """
+
 # pylint has trouble with the OCP imports
 # pylint: disable=no-name-in-module, import-error
-import copy
+import copy as copy_module
 import ctypes
+import math
 import os
 import sys
-import uuid
 import warnings
-from typing import Iterable, Union
+from os import PathLike, fsdecode
+from typing import Union
+from uuid import UUID
 
+from collections.abc import Iterable
+
+import OCP.TopAbs as ta
 from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
@@ -95,14 +101,18 @@ from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeSolid,
     BRepBuilderAPI_Sewing,
 )
+from OCP.BRepGProp import BRepGProp
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.gp import gp_Pnt
-import OCP.TopAbs as ta
+from OCP.GProp import GProp_GProps
+from OCP.TopAbs import TopAbs_ShapeEnum
+from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
-
+from OCP.TopoDS import TopoDS_Compound
 from py_lib3mf import Lib3MF
+
 from build123d.build_enums import MeshType, Unit
-from build123d.geometry import Color, Vector
+from build123d.geometry import TOLERANCE, Color
 from build123d.topology import Compound, Shape, Shell, Solid, downcast
 
 
@@ -206,7 +216,7 @@ class Mesher:
         name space `build123d`, name equal to the base file name and the type
         as `python`"""
         caller_file = sys._getframe().f_back.f_code.co_filename
-        with open(caller_file, mode="r", encoding="utf-8") as code_file:
+        with open(caller_file, encoding="utf-8") as code_file:
             source_code = code_file.read()  # read whole file to a string
 
         self.add_meta_data(
@@ -232,7 +242,7 @@ class Mesher:
         return meta_data_contents
 
     def get_meta_data_by_key(self, name_space: str, name: str) -> dict:
-        """Retrive the metadata value and type for the provided name space and name"""
+        """Retrieve the metadata value and type for the provided name space and name"""
         meta_data_group = self.model.GetMetaDataGroup()
         meta_data_contents = {}
         meta_data = meta_data_group.GetMetaDataByKey(name_space, name)
@@ -267,7 +277,7 @@ class Mesher:
             theLinDeflection=linear_deflection,
             isRelative=True,
             theAngDeflection=angular_deflection,
-            isInParallel=False,
+            isInParallel=True,
         )
 
         ocp_mesh_vertices = []
@@ -285,6 +295,8 @@ class Mesher:
                 ocp_mesh_vertices.append(pnt)
 
             # Store the triangles from the triangulated faces
+            if facet.wrapped is None:
+                continue
             facet_reversed = facet.wrapped.Orientation() == ta.TopAbs_REVERSED
             order = [1, 3, 2] if facet_reversed else [1, 2, 3]
             for tri in poly_triangulation.Triangles():
@@ -295,64 +307,69 @@ class Mesher:
     @staticmethod
     def _create_3mf_mesh(
         ocp_mesh_vertices: list[tuple[float, float, float]],
-        triangles: list[list[int, int, int]],
+        triangles: list[list[int]],
     ):
-        """Create the data to create a 3mf mesh"""
-        # Create a lookup table of face vertex to shape vertex
-        unique_vertices = list(set(ocp_mesh_vertices))
-        vert_table = {
-            i: unique_vertices.index(pnt) for i, pnt in enumerate(ocp_mesh_vertices)
-        }
-
-        # Create vertex list of 3MF positions
-        vertices_3mf = []
-        gp_pnts = []
-        for pnt in unique_vertices:
-            c_array = (ctypes.c_float * 3)(*pnt)
-            vertices_3mf.append(Lib3MF.Position(c_array))
-            gp_pnts.append(gp_Pnt(*pnt))
-            # mesh_3mf.AddVertex  Should AddVertex be used to save memory?
-
-        # Create triangle point list
+        # Round off the vertices to avoid vertices within tolerance being
+        # considered as different vertices
+        digits = -int(round(math.log(TOLERANCE, 10), 1))
+        
+        # Create vertex to index mapping directly
+        vertex_to_idx = {}
+        next_idx = 0
+        vert_table = {}
+        
+        # First pass - create mapping
+        for i, (x, y, z) in enumerate(ocp_mesh_vertices):
+            key = (round(x, digits), round(y, digits), round(z, digits))
+            if key not in vertex_to_idx:
+                vertex_to_idx[key] = next_idx
+                next_idx += 1
+            vert_table[i] = vertex_to_idx[key]
+        
+        # Create vertices array in one shot
+        vertices_3mf = [
+            Lib3MF.Position((ctypes.c_float * 3)(*v))
+            for v in vertex_to_idx.keys()
+        ]
+        
+        # Pre-allocate triangles array and process in bulk
+        c_uint3 = ctypes.c_uint * 3
         triangles_3mf = []
-        for vertex_indices in triangles:
-            mapped_indices = [
-                vert_table[i] for i in [vertex_indices[i] for i in range(3)]
-            ]
-            # Remove degenerate triangles
-            if len(set(mapped_indices)) != 3:
-                continue
-            c_array = (ctypes.c_uint * 3)(*mapped_indices)
-            triangles_3mf.append(Lib3MF.Triangle(c_array))
-
+        
+        # Process triangles in bulk
+        for tri in triangles:
+            # Map indices directly without list comprehension
+            a, b, c = tri[0], tri[1], tri[2]
+            mapped_a = vert_table[a]
+            mapped_b = vert_table[b]
+            mapped_c = vert_table[c]
+            
+            # Quick degenerate check without set creation
+            if mapped_a != mapped_b and mapped_b != mapped_c and mapped_c != mapped_a:
+                triangles_3mf.append(Lib3MF.Triangle(c_uint3(mapped_a, mapped_b, mapped_c)))
+        
         return (vertices_3mf, triangles_3mf)
 
     def _add_color(self, b3d_shape: Shape, mesh_3mf: Lib3MF.MeshObject):
         """Transfer color info from shape to mesh"""
         if b3d_shape.color:
-            color_group = self.model.AddColorGroup()
-            color_index = color_group.AddColor(
-                self.wrapper.FloatRGBAToColor(*b3d_shape.color.to_tuple())
+            base_material_group = self.model.AddBaseMaterialGroup()
+            color_lib3mf = self.wrapper.FloatRGBAToColor(*tuple(b3d_shape.color))
+            base_material_id = base_material_group.AddMaterial(
+                Name=str(b3d_shape.color), DisplayColor=color_lib3mf
             )
-            triangle_property = Lib3MF.TriangleProperties()
-            triangle_property.ResourceID = color_group.GetResourceID()
-            triangle_property.PropertyIDs[0] = color_index
-            triangle_property.PropertyIDs[1] = color_index
-            triangle_property.PropertyIDs[2] = color_index
-            for i in range(mesh_3mf.GetTriangleCount()):
-                mesh_3mf.SetTriangleProperties(i, ctypes.pointer(triangle_property))
-
-            # Object Level Property
-            mesh_3mf.SetObjectLevelProperty(color_group.GetResourceID(), color_index)
+            mesh_3mf.SetObjectLevelProperty(
+                base_material_group.GetResourceID(), base_material_id
+            )
 
     def add_shape(
         self,
-        shape: Union[Shape, Iterable[Shape]],
+        shape: Shape | Iterable[Shape],
         linear_deflection: float = 0.001,
         angular_deflection: float = 0.1,
         mesh_type: MeshType = MeshType.MODEL,
-        part_number: str = None,
-        uuid_value: uuid = None,
+        part_number: str | None = None,
+        uuid_value: UUID | None = None,
     ):
         """add_shape
 
@@ -385,14 +402,17 @@ class Mesher:
 
             # Mesh the shape
             ocp_mesh_vertices, triangles = Mesher._mesh_shape(
-                copy.deepcopy(b3d_shape),
+                copy_module.deepcopy(b3d_shape),
                 linear_deflection,
                 angular_deflection,
             )
 
             # Skip invalid meshes
             if len(ocp_mesh_vertices) < 3 or not triangles:
-                warnings.warn(f"Degenerate shape {b3d_shape} - skipped")
+                warnings.warn(
+                    f"Degenerate shape {b3d_shape} - skipped",
+                    stacklevel=2,
+                )
                 continue
 
             # Create 3mf mesh inputs
@@ -421,7 +441,7 @@ class Mesher:
             if not mesh_3mf.IsValid():
                 raise RuntimeError("3mf mesh is invalid")
             if not mesh_3mf.IsManifoldAndOriented():
-                warnings.warn("3mf mesh is not manifold")
+                warnings.warn("3mf mesh is not manifold", stacklevel=2)
 
             # Add mesh to model
             self.meshes.append(mesh_3mf)
@@ -446,26 +466,38 @@ class Mesher:
             # Create the triangular face using the polygon
             polygon_builder = BRepBuilderAPI_MakePolygon(*ocp_vertices, Close=True)
             face_builder = BRepBuilderAPI_MakeFace(polygon_builder.Wire())
-            # Add new Face to Shell
-            shell_builder.Add(face_builder.Face())
+            facet = face_builder.Face()
+            facet_properties = GProp_GProps()
+            BRepGProp.SurfaceProperties_s(facet, facet_properties)
+            if facet_properties.Mass() != 0:  # Area==0 is an invalid facet
+                shell_builder.Add(facet)
 
-        # Create the Shell
+        # Create the Shell(s) - if the object has voids there will be multiple
         shell_builder.Perform()
-        occ_shell = downcast(shell_builder.SewedShape())
+        occ_sewed_shape = downcast(shell_builder.SewedShape())
+
+        if isinstance(occ_sewed_shape, TopoDS_Compound):
+            occ_shells = []
+            explorer = TopExp_Explorer(occ_sewed_shape, TopAbs_ShapeEnum.TopAbs_SHELL)
+            while explorer.More():
+                occ_shells.append(downcast(explorer.Current()))
+                explorer.Next()
+        else:
+            occ_shells = [occ_sewed_shape]
 
         # Create a solid if manifold
-        shape_obj = Shell(occ_shell)
+        shape_obj = Shell(occ_sewed_shape)
         if shape_obj.is_manifold:
-            solid_builder = BRepBuilderAPI_MakeSolid(occ_shell)
+            solid_builder = BRepBuilderAPI_MakeSolid(*occ_shells)
             shape_obj = Solid(solid_builder.Solid())
 
         return shape_obj
 
-    def read(self, file_name: str) -> list[Shape]:
+    def read(self, file_name: PathLike | str | bytes) -> list[Shape]:
         """read
 
         Args:
-            file_name (str): file path
+            file_name Union[PathLike, str, bytes]: file path
 
         Raises:
             ValueError: Unknown file format - must be 3mf or stl
@@ -473,16 +505,16 @@ class Mesher:
         Returns:
             list[Shape]: build123d shapes extracted from mesh file
         """
-        input_file_format = file_name.split(".")[-1].lower()
-        if input_file_format not in ["3mf", "stl"]:
-            raise ValueError(f"Unknown file format {input_file_format}")
-        reader = self.model.QueryReader(input_file_format)
+        file_name = fsdecode(file_name)
+        _, input_file_extension = os.path.splitext(file_name)
+        if input_file_extension not in [".3mf", ".stl"]:
+            raise ValueError(f"Unknown file format {input_file_extension}")
+        reader = self.model.QueryReader(input_file_extension[1:])
         reader.ReadFromFile(file_name)
         self.unit = Mesher._map_3mf_to_b3d_unit[self.model.GetUnit()]
 
         # Extract 3MF meshes and translate to OCP meshes
         mesh_iterator: Lib3MF.MeshObjectIterator = self.model.GetMeshObjects()
-        self.meshes: list[Lib3MF.MeshObject]
         for _i in range(mesh_iterator.Count()):
             mesh_iterator.MoveNext()
             self.meshes.append(mesh_iterator.GetCurrentMeshObject())
@@ -491,41 +523,31 @@ class Mesher:
             shape = self._get_shape(mesh)
             shape.label = mesh.GetName()
             # Extract color
-            color_indices = []
-            for triangle_property in mesh.GetAllTriangleProperties():
-                color_indices.extend(
-                    [
-                        (triangle_property.ResourceID, triangle_property.PropertyIDs[i])
-                        for i in range(3)
-                    ]
-                )
-            unique_color_indices = list(set(color_indices))
-            try:
-                color_group = self.model.GetColorGroupByID(unique_color_indices[0][0])
-            except:
-                shapes.append(shape)  # There are no colors
-                continue
-            if len(unique_color_indices) > 1:
-                warnings.warn("Warning multiple colors found on mesh - only one used")
-            color_3mf = color_group.GetColor(unique_color_indices[0][1])
-            color = (color_3mf.Red, color_3mf.Green, color_3mf.Blue, color_3mf.Alpha)
-            color = (c / 255.0 for c in color)
-            shape.color = Color(*color)
+            # TODO: check tuple 3rd value means material found
+            base_mat_id, color_index, material_enabled = mesh.GetObjectLevelProperty()
+            if material_enabled:
+                base_mat = self.model.GetBaseMaterialGroupByID(base_mat_id)
+                base_mat_color: Lib3MF.Color = base_mat.GetDisplayColor(color_index)
+                color: tuple = self.wrapper.ColorToFloatRGBA(
+                    base_mat_color
+                )  # RGBA float
+                shape.color = Color(*color)
             shapes.append(shape)
 
         return shapes
 
-    def write(self, file_name: str):
+    def write(self, file_name: PathLike | str | bytes):
         """write
 
         Args:
-            file_name (str): file path
+            file_name Union[Pathlike, str, bytes]: file path
 
         Raises:
             ValueError: Unknown file format - must be 3mf or stl
         """
-        output_file_format = file_name.split(".")[-1].lower()
-        if output_file_format not in ["3mf", "stl"]:
-            raise ValueError(f"Unknown file format {output_file_format}")
-        writer = self.model.QueryWriter(output_file_format)
+        file_name = fsdecode(file_name)
+        _, output_file_extension = os.path.splitext(file_name)
+        if output_file_extension not in [".3mf", ".stl"]:
+            raise ValueError(f"Unknown file format {output_file_extension}")
+        writer = self.model.QueryWriter(output_file_extension[1:])
         writer.WriteToFile(file_name)

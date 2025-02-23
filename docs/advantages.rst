@@ -26,8 +26,8 @@ python context manager.
     with BuildPart() as pillow_block:
         with BuildSketch() as plan:
             Rectangle(width, height)
-            Fillet(*plan.vertices(), radius=fillet)
-        Extrude(thickness)
+            fillet(plan.vertices(), radius=fillet)
+        extrude(thickness)
         ...
 
 The use of the standard `with` block allows standard python instructions to be
@@ -47,7 +47,7 @@ an instance variable as with standard python programming for direct use.
 
     with BuildSketch() as plan:
         r = Rectangle(width, height)
-        print(r.Area())
+        print(r.area)
         ...
 
 Operators
@@ -81,7 +81,7 @@ by the last operation and fillets them. Such a selection would be quite difficul
 otherwise.
 
 .. literalinclude:: ../examples/intersecting_pipes.py
-    :lines: 29, 37-48
+    :lines: 30, 39-49
 
 
 Extensions

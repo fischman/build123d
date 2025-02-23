@@ -1,42 +1,36 @@
 """
+name: "canadian_flag.py"
+title: "Canadian Flag blowing in the wind"
+authors: "Gumyr"
+license: "http://www.apache.org/licenses/LICENSE-2.0"
+created: "2023-02-23"
+modified: "2023-07-31"
 
-Projection Examples: Canadian Flag in the Wind
+description: | 
+    A Canadian Flag blowing in the wind created by projecting planar faces onto a non-planar face (the_wind).
 
-name: canadian_flag.py
-by:   Gumyr
-date: February 23th 2023
+    This example also demonstrates building complex lines that snap to existing features.
 
-desc: A Canadian Flag blowing in the wind created by projecting planar
-      faces onto a non-planar face (the_wind).
-
-      This example also demonstrates building complex lines that snap to
-      existing features.
-
-license:
-
-    Copyright 2023 Gumyr
-
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
-
-        http://www.apache.org/licenses/LICENSE-2.0
-
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
-
+has_builder_mode: true
+has_algebra_mode: true
+image_files:
+    - "example_canadian_flag_01.png"
+    - "example_canadian_flag_02.png"
+    - "example_canadian_flag_03.png"
 """
+
+# [Imports]
 from math import sin, cos, pi
 from build123d import *
-from ocp_vscode import show_object
+from ocp_vscode import show_object, show
 
+# [Parameters]
 # Canadian Flags have a 2:1 aspect ratio
 height = 50
 width = 2 * height
 wave_amplitude = 3
+
+# [Code]
 
 
 def surface(amplitude, u, v):
@@ -99,16 +93,14 @@ maple_leaf_planar = maple_leaf_builder.sketch.faces()[0]
 center_field_planar = center_field_builder.sketch.faces()[0]
 
 west_field = west_field_planar.project_to_shape(the_wind, (0, 0, -1))[0]
+west_field.color = Color("red")
 east_field = east_field_planar.project_to_shape(the_wind, (0, 0, -1))[0]
+east_field.color = Color("red")
 center_field = center_field_planar.project_to_shape(the_wind, (0, 0, -1))[0]
+center_field.color = Color("white")
 maple_leaf = maple_leaf_planar.project_to_shape(the_wind, (0, 0, -1))[0]
+maple_leaf.color = Color("red")
 
-# show_object(
-#     the_wind,
-#     name="the_wind",
-#     options={"alpha": 0.8, "color": (170 / 255, 85 / 255, 255 / 255)},
-# )
-show_object(west_field, name="west", options={"color": (255, 0, 0)})
-show_object(east_field, name="east", options={"color": (255, 0, 0)})
-show_object(center_field, name="center", options={"color": (255, 255, 255)})
-show_object(maple_leaf, name="maple", options={"color": (255, 0, 0)})
+canadian_flag = Compound(children=[west_field, east_field, center_field, maple_leaf])
+show(Rot(90, 0, 0) * canadian_flag)
+# [End]

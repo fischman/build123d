@@ -1,6 +1,5 @@
 import math
 import unittest
-import pytest
 from build123d import *
 from build123d.topology import Shape
 
@@ -213,7 +212,7 @@ class ObjectTests(unittest.TestCase):
     # Face
 
     def test_rect(self):
-        r = Face.make_rect(1, 2)
+        r = Face.make_rect(2, 1)
 
         self.assertTrue(isinstance(r, Shape))
 
@@ -339,6 +338,31 @@ class ObjectTests(unittest.TestCase):
 
 
 class AlgebraTests(unittest.TestCase):
+
+    # Shapes
+
+    def test_shape_plus(self):
+        f1 = Face.make_rect(1, 3)
+        f2 = Face.make_rect(3, 1)
+        f3 = f1 + f2
+        self.assertTupleAlmostEquals(f3.bounding_box().size, (3, 3, 0), 6)
+
+        f4 = f1 + []
+        self.assertTupleAlmostEquals(f4.bounding_box().size, (1, 3, 0), 6)
+
+        e1 = Edge.make_line((0, 0), (1, 1))
+        with self.assertRaises(ValueError):
+            _ = f1 + e1
+
+        with self.assertRaises(ValueError):
+            _ = Shape() + f2
+
+        f5 = Face() + f1
+        self.assertTupleAlmostEquals(f5.bounding_box().size, (1, 3, 0), 6)
+
+        f6 = Face() + [f1, f2]
+        self.assertTupleAlmostEquals(f6.bounding_box().size, (3, 3, 0), 6)
+
     # Part
 
     def test_part_plus(self):
@@ -507,21 +531,51 @@ class AlgebraTests(unittest.TestCase):
         self.assertTupleAlmostEquals(result.bounding_box().max, (0.4, 0.4, 0.0), 3)
 
     # Curve
-    def test_curve_plus(self):
+    def test_curve_plus_continuous(self):
         l1 = Polyline((0, 0), (1, 0), (1, 1))
         l2 = Line((1, 1), (0, 0))
         l = l1 + l2
-        w = Wire.make_wire(l)
-        self.assertTrue(w.is_closed)
+        self.assertTrue(isinstance(l, Wire))
+        self.assertTrue(l.is_closed)
         self.assertTupleAlmostEquals(
-            w.center(CenterOf.MASS), (0.6464466094067263, 0.35355339059327373, 0.0), 6
+            l.center(CenterOf.MASS), (0.6464466094067263, 0.35355339059327373, 0.0), 6
         )
+
+    def test_curve_plus_noncontinuous(self):
+        e1 = Edge.make_line((0, 1), (1, 1))
+        e2 = Edge.make_line((1, 1), (2, 1))
+        e3 = Edge.make_line((2, 1), (3, 1))
+        l = Curve() + [e1, e3]
+        self.assertTrue(isinstance(l, Compound))
+        l += e2  # fills the hole and makes a single edge
+        self.assertTrue(isinstance(l, Edge))
+        self.assertAlmostEqual(l.length, 3, 5)
+
+        l2 = e1 + e3
+        self.assertTrue(isinstance(l2, list))
+
+    def test_curve_plus_nothing(self):
+        e1 = Edge.make_line((0, 1), (1, 1))
+        l = e1 + Curve()
+        self.assertTrue(isinstance(l, Edge))
+        self.assertAlmostEqual(l.length, 1, 5)
+
+    def test_nothing_plus_curve(self):
+        e1 = Edge.make_line((0, 1), (1, 1))
+        l = Curve() + e1
+        self.assertTrue(isinstance(l, Edge))
+        self.assertAlmostEqual(l.length, 1, 5)
+
+    def test_bad_dims(self):
+        e1 = Edge.make_line((0, 1), (1, 1))
+        f1 = Face.make_rect(1, 1)
+        with self.assertRaises(ValueError):
+            _ = e1 + f1
 
     def test_curve_minus(self):
         l1 = Line((0, 0), (1, 1))
         l2 = Line((0.25, 0.25), (0.75, 0.75))
         l = l1 - l2
-
         vertices = l.vertices().sort_by(Axis.X)
         self.assertEqual(len(vertices), 4)
         self.assertTupleAlmostEquals(vertices[0], (0.0, 0.0, 0.0), 6)
@@ -538,17 +592,30 @@ class AlgebraTests(unittest.TestCase):
         self.assertTupleAlmostEquals(vertices[0], l2 @ 0, 6)
         self.assertTupleAlmostEquals(vertices[1], l2 @ 1, 6)
 
+    def test_curve_operators(self):
+        l1 = CenterArc((0, 0), 1, 0, 180)
+        l2 = CenterArc((2, 0), 1, 0, -180)
+        l = Curve() + [l1, l2]
+        self.assertTupleAlmostEquals(l @ 0.25, Vector(2.0, -1.0, 0.0), 6)
+        self.assertTupleAlmostEquals(l % 0.25, Vector(-1.0, 0.0, 0.0), 6)
+        self.assertTupleAlmostEquals((l ^ 0.25).position, l @ 0.25, 6)
+        self.assertTupleAlmostEquals(
+            (l ^ 0.25).orientation, Vector(0.0, -90.0, 90.0), 6
+        )
+
     # Part + - & Empty
 
     def test_empty_plus_part(self):
         b = Box(1, 2, 3)
         r = Part() + b
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.volume, r.volume, 5)
+        self.assertEqual(r._dim, 3)
 
     def test_part_plus_empty(self):
         b = Box(1, 2, 3)
         r = b + Part()
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.volume, r.volume, 5)
+        self.assertEqual(r._dim, 3)
 
     def test_empty_minus_part(self):
         b = Box(1, 2, 3)
@@ -558,7 +625,8 @@ class AlgebraTests(unittest.TestCase):
     def test_part_minus_empty(self):
         b = Box(1, 2, 3)
         r = b - Part()
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.volume, r.volume, 5)
+        self.assertEqual(r._dim, 3)
 
     def test_empty_and_part(self):
         b = Box(1, 2, 3)
@@ -575,12 +643,14 @@ class AlgebraTests(unittest.TestCase):
     def test_empty_plus_sketch(self):
         b = Rectangle(1, 2)
         r = Sketch() + b
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.area, r.area, 5)
+        self.assertEqual(r._dim, 2)
 
     def test_sketch_plus_empty(self):
         b = Rectangle(1, 2)
         r = b + Sketch()
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.area, r.area, 5)
+        self.assertEqual(r._dim, 2)
 
     def test_empty_minus_sketch(self):
         b = Rectangle(1, 2)
@@ -590,7 +660,8 @@ class AlgebraTests(unittest.TestCase):
     def test_sketch_minus_empty(self):
         b = Rectangle(1, 2)
         r = b - Sketch()
-        self.assertEqual(b.wrapped, r.wrapped)
+        self.assertAlmostEqual(b.area, r.area, 5)
+        self.assertEqual(r._dim, 2)
 
     def test_empty_and_sketch(self):
         b = Rectangle(1, 3)
@@ -601,6 +672,126 @@ class AlgebraTests(unittest.TestCase):
         b = Rectangle(1, 2)
         with self.assertRaises(ValueError):
             r = b & Sketch()
+
+    def test_1d_2d_minus(self):
+        line = Line((0, 0), (1, 1))
+        rectangle = Rectangle(1, 1)
+        r = line - rectangle
+        vertices = r.vertices()
+        self.assertEqual(len(vertices), 2)
+        self.assertTupleAlmostEquals(vertices[0], (0.5, 0.5, 0.0), 6)
+        self.assertTupleAlmostEquals(vertices[1], (1.0, 1.0, 0.0), 6)
+
+    def test_1d_3d_minus(self):
+        line = Line((0, 0), (1, 1))
+        box = Box(1, 1, 1)
+        r = line - box
+        vertices = r.vertices()
+        self.assertEqual(len(vertices), 2)
+        self.assertTupleAlmostEquals(vertices[0], (0.5, 0.5, 0.0), 6)
+        self.assertTupleAlmostEquals(vertices[1], (1.0, 1.0, 0.0), 6)
+
+    def test_2d_3d_minus(self):
+        rectangle = Pos(0.5, 0, 0) * Rectangle(1, 1)
+        box = Box(1, 1, 1)
+        r = rectangle - box
+        vertices = r.vertices()
+        self.assertEqual(len(vertices), 4)
+        self.assertTupleAlmostEquals(vertices[0], (0.5, -0.5, 0.0), 6)
+        self.assertTupleAlmostEquals(vertices[1], (0.5, 0.5, 0.0), 6)
+        self.assertTupleAlmostEquals(vertices[2], (1.0, 0.5, 0.0), 6)
+        self.assertTupleAlmostEquals(vertices[3], (1.0, -0.5, 0.0), 6)
+
+    def test_3d_2d_minus(self):
+        box = Box(1, 1, 1)
+        rectangle = Rectangle(1, 1)
+        with self.assertRaises(ValueError):
+            _ = box - rectangle
+
+    def test_3d_1d_minus(self):
+        box = Box(1, 1, 1)
+        line = Line((0, 0), (1, 1))
+        with self.assertRaises(ValueError):
+            _ = box - line
+
+    def test_2d_1d_minus(self):
+        rectangle = Rectangle(1, 1)
+        line = Line((0, 0), (1, 1))
+        with self.assertRaises(ValueError):
+            _ = rectangle - line
+
+    def test_compound_plus(self):
+        addend0 = Box(4, 4, 4)
+        addend1 = Box(1, 1, 8)
+        base_shapes = PolarLocations(15, 20) * addend0
+        addons = PolarLocations(16, 20) * addend1
+
+        p1 = Compound(base_shapes) + Compound(addons)
+        self.assertEqual(p1._dim, 3)
+        self.assertAlmostEqual(p1.volume, 20 * (4**3 + 1 * 1 * 4), 5)
+
+        with self.assertRaises(ValueError):
+            Compound(children=[addend0] + addend1.faces()) + Box(1, 1, 1)
+
+        with self.assertRaises(ValueError):
+            Box(1, 1, 1) + Compound(children=addend1.faces())
+
+    def test_compound_minus(self):
+        minuend = Box(4, 4, 4)
+        subtrahend = Box(1, 1, 4)
+        base_shapes = PolarLocations(15, 20) * minuend
+        holes = PolarLocations(17, 20) * subtrahend
+        s1 = Compound(base_shapes) - Compound(holes)
+        self.assertAlmostEqual(s1.volume, 20 * (16 - 0.5) * 4, 5)
+
+        s2 = minuend - subtrahend
+        self.assertEqual(s2._dim, 3)
+        self.assertAlmostEqual(s2.volume, (16 - 1) * 4, 5)
+
+        s3 = minuend.solid() - subtrahend.solid()
+        self.assertEqual(s3._dim, 3)
+        self.assertAlmostEqual(s3.volume, (16 - 1) * 4, 5)
+
+        s4 = Compound(minuend.faces()) - subtrahend
+        self.assertEqual(s4._dim, 2)
+        self.assertAlmostEqual(s4.area, 4 * 16 + 2 * (16 - 1), 5)
+
+        s5 = minuend.shell() - subtrahend
+        self.assertEqual(s5._dim, 2)
+        self.assertAlmostEqual(s5.area, 4 * 16 + 2 * (16 - 1), 5)
+
+        s6 = minuend - None
+        self.assertEqual(s6._dim, 3)
+        self.assertAlmostEqual(s6.volume, 4**3, 5)
+
+        s7 = minuend - Pos((8, 0, 0)) * subtrahend
+        self.assertEqual(s7._dim, 3)
+        self.assertAlmostEqual(s7.volume, 4**3, 5)
+
+        s8 = minuend - [subtrahend, Box(4, 1, 1)]
+        self.assertEqual(s8._dim, 3)
+        self.assertAlmostEqual(s8.volume, (16 - 1) * 4 - 1 * 3, 5)
+
+        s9 = Compound(children=[minuend]) - Compound(children=[subtrahend])
+        self.assertEqual(s9._dim, 3)
+        self.assertAlmostEqual(s9.volume, (16 - 1) * 4, 5)
+
+        s10 = Compound(minuend) - Compound(subtrahend)
+        self.assertEqual(s10._dim, 3)
+        self.assertAlmostEqual(s10.volume, (16 - 1) * 4, 5)
+
+        s11 = minuend.shell() - Compound(children=[subtrahend, Box(4, 1, 1)])
+        self.assertEqual(s11._dim, 2)
+        self.assertAlmostEqual(s11.area, 2 * 16 + 4 * (16 - 1), 5)
+
+        b1 = minuend.shell()
+        s12 = b1 - Compound(children=[subtrahend, b1.faces()[0]])
+        self.assertEqual(s12._dim, 2)
+        self.assertAlmostEqual(s12.area, 3 * 16 + 2 * (16 - 1), 5)
+        self.assertEqual(len(s12.faces()), 5)
+
+        with self.assertRaises(ValueError):
+            Compound(children=[minuend] + subtrahend.faces()) - Box(1, 1, 1)
 
 
 class LocationTests(unittest.TestCase):
@@ -633,6 +824,7 @@ class LocationTests(unittest.TestCase):
             # on plane, located to grid position, and finally rotated
             c_plane = plane * outer_loc * rotations[i]
             s += c_plane * Circle(1)
+            s = Sketch(s.faces())
 
             for loc in PolarLocations(0.8, (i + 3) * 2):
                 # Use polar locations on c_plane

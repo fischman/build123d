@@ -1,10 +1,22 @@
 ############
 Installation
 ############
-Install build123d from github:
-----------------------------------------------
 
-The recommended method for most users is to install build123d with one of the following two commands.
+The recommended method for most users to install **build123d** is:
+
+.. doctest::
+
+	>>> pip install build123d
+
+.. note::
+
+	The `ocp-vscode <https://github.com/bernhard-42/vscode-ocp-cad-viewer>`_ viewer has
+	the ability to install **build123d**.
+
+Install build123d from GitHub:
+------------------------------
+
+To get the latest non-released version of **build123d** one can install from GitHub using one of the following two commands:
 
 In Linux/MacOS, use the following command:
 
@@ -25,8 +37,14 @@ upgraded pip to the latest version with the following command:
 
 	>>> python3 -m pip install --upgrade pip
 
-If you use `poetry <https://python-poetry.org/>`_ to install build123d, you might need to specify
-the branch that is used for git-based installs ; until quite recently, poetry used to checkout the
+If you use `poetry <https://python-poetry.org/>`_ to install build123d, you can simply use:
+
+.. doctest::
+
+	>>> poetry add build123d
+
+However, if you want the latest commit from GitHub you might need to specify
+the branch that is used for git-based installs; until quite recently, poetry used to checkout the
 `master` branch when none was specified, and this fails on build123d that uses a `dev` branch.
 
 Pip does not suffer from this issue because it correctly fetches the repository default branch.
@@ -62,6 +80,13 @@ with the following commands:
 
 Please substitute ``python3`` with ``python`` in the lines above if you are using Windows.
 
+If you're working directly with the OpenCascade ``OCP`` layer you will likely want to install
+the OCP stubs as follows:
+
+.. doctest::
+
+	>>> python3 -m pip install git+https://github.com/CadQuery/OCP-stubs@7.7.0
+
 Test your build123d installation:
 ----------------------------------------------
 If all has gone well, you can open a command line/prompt, and type:
@@ -84,35 +109,6 @@ Which should return something similar to:
 			├── Face at 0x165e8821570, Center(0.5, 2.0, 1.5)
 			├── Face at 0x165e88218f0, Center(0.5, 1.0, 0.0)
 			└── Face at 0x165eb21ee70, Center(0.5, 1.0, 3.0)
-
-Special notes on Apple Silicon installs
-----------------------------------------------
-
-Due to some dependencies not being available via pip, there is a bit of a hacky work around for Apple Silicon installs (M1 or M2 ARM64 architecture machines - if you aren't sure, try `uname -p` in a terminal and see if it returns arm).  Specifically the cadquery-ocp dependency fails to resolve at install time.  The error looks something like this:
-
-.. doctest::
-
-	└[~]> python3 -m pip install git+https://github.com/gumyr/build123d
-	Collecting git+https://github.com/gumyr/build123d
-	...
-	INFO: pip is looking at multiple versions of build123d to determine which version is compatible with other requirements. This could take a while.
-	ERROR: Could not find a version that satisfies the requirement cadquery-ocp~=7.7.1 (from build123d) (from versions: none)
-	ERROR: No matching distribution found for cadquery-ocp~=7.7.1
-
-A procedure for avoiding this issue is to install in a conda environment, which does have the missing dependency (substituting <YOUR ENVIRONMENT NAME> for the environment name you want to use for this install):
-
-.. doctest::
-
-	conda create -n <YOUR ENVIRONMENT NAME> python=3.10
-	conda activate <YOUR ENVIRONMENT NAME>
-	conda install -c cadquery -c conda-forge cadquery=master
-	pip install svgwrite svgpathtools anytree scipy ipython \
-	    ocp_tessellate webcolors==1.12 numpy numpy-quaternion cachetools==5.2.0 \
-	    ocp_vscode requests orjson urllib3 certifi numpy-stl git+https://github.com/jdegenstein/py-lib3mf \
-	    "svgpathtools>=1.5.1,<2" "svgelements>=1.9.1,<2"
-	pip install --no-deps git+https://github.com/gumyr/build123d git+https://github.com/snoyer/ocpsvg
-
-`You can track the issue here <https://github.com/CadQuery/ocp-build-system/issues/11#issuecomment-1407769681>`_
 
 Adding a nicer GUI
 ----------------------------------------------

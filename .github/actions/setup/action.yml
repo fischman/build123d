@@ -7,15 +7,11 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: python
-      uses: actions/setup-python@v4
+    - name: Setup Python
+      uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
-    - name: install requirements
+        python-version: ${{ inputs.python-version }}
+    - name: Install Requirements
       shell: bash
       run: |
-        pip install wheel
-        pip install mypy
-        pip install pytest
-        pip install pylint
-        pip install .
+        pip install .[development]
